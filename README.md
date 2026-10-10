@@ -53,4 +53,23 @@ pnpm dev
 
 - B站搜索单次约 6~11 秒（多关键词串行 + 风控间隔）
 - B站接口有风控，高频请求可能失败（已做重试）
-- 部分地区访问 Bangumi 可能需要代理
+
+## 连不上 Bangumi？
+
+访问 `/api/diagnose` 可一键诊断，或在页面查询失败时点击「运行网络诊断」按钮。
+
+常见原因是 **DNS 污染**：`api.bgm.tv` 被解析到了 Dropbox/Facebook 的 IP 段。检查方法：
+
+```bash
+nslookup api.bgm.tv
+# 正常应返回 Bangumi 的 IP
+# 若返回 162.125.* / 108.160.*（Dropbox）或 69.63.* / 31.13.*（Facebook），即为污染
+```
+
+解决办法：更换 DNS（`223.5.5.5` 阿里 / `119.29.29.29` 腾讯）或使用代理。
+
+也可用环境变量指定 API 基址：
+
+```bash
+BANGUMI_API_BASE=https://api.bgm.tv pnpm dev
+```

@@ -8,7 +8,8 @@
 
 import type { Paged, UserCollection, WorkItem } from './types'
 
-const BANGUMI_API = 'https://api.bgm.tv'
+/** Bangumi API 基址，可通过环境变量覆盖（便于测试或自建镜像） */
+const BANGUMI_API = process.env.BANGUMI_API_BASE || 'https://api.bgm.tv'
 
 /** Bangumi 要求带上可识别的 User-Agent */
 const USER_AGENT =
@@ -67,9 +68,31 @@ export async function fetchUserCollections(
       next: { revalidate: 300 },
     })
   } catch (e) {
-    throw new BangumiError(
-      '无法连接 Bangumi，请检查网络（部分地区可能需要代理）',
-    )
+    // 区分 DNS 解析失败与其他网络错误，便于定位问题
+    const cause = (e as any)?.cause
+    const code = cause?.code || (e as any)?.code || ''
+    const msg = String((e as any)?.message || e)
+
+    if (
+      code === 'ENOTFOUND' ||
+      code === 'EAI_AGAIN' ||
+      msg.includes('ENOTFOUND') ||
+      msg.includes('EAI_AGAIN')
+    ) {
+      throw new BangumiError(
+        'DNS 解析 api.bgm.tv 失败。若你使用了自定义 DNS 或代理，请检查其是否污染了该域名',
+        502,
+      )
+    }
+
+    if (code === 'ETIMEDOUT' || code === 'ECONNREFUSED' || msg.includes('timed out')) {
+      throw new BangumiError(
+        '连接 api.bgm.tv 超时。可能是网络环境限制或需要代理',
+        502,
+      )
+    }
+
+    throw new BangumiError(`无法连接 Bangumi：${msg}`, 502)
   }
 
   if (res.status === 404) {

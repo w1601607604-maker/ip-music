@@ -257,9 +257,29 @@ export default function Home() {
         </div>
 
         {worksError && (
-          <p className="mt-4 rounded-lg bg-red-950/50 px-4 py-2.5 text-sm text-red-300">
-            {worksError}
-          </p>
+          <div className="mt-4 rounded-lg bg-red-950/50 px-4 py-2.5 text-sm text-red-300">
+            <p className="whitespace-pre-wrap font-mono text-xs leading-relaxed">
+              {worksError}
+            </p>
+            <button
+              onClick={async () => {
+                try {
+                  const r = await fetch('/api/diagnose')
+                  const d = await r.json()
+                  setWorksError(
+                    `${worksError}\n\n【诊断结果】\n${d.verdict}\n` +
+                      `DNS: ${JSON.stringify(d.dns)}\n` +
+                      `HTTP: ${JSON.stringify(d.http)}`,
+                  )
+                } catch {
+                  setWorksError(`${worksError}\n\n诊断请求失败`)
+                }
+              }}
+              className="mt-2 rounded border border-red-700 px-3 py-1 text-xs text-red-200 transition hover:bg-red-900/40"
+            >
+              运行网络诊断
+            </button>
+          </div>
         )}
       </section>
 

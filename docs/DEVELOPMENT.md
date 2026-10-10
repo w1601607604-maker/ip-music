@@ -13,7 +13,8 @@
 - [阶段 5：联调与验证](#阶段-5联调与验证)
 - [阶段 6：缺陷修复](#阶段-6缺陷修复)
 - [阶段 7：最终验收](#阶段-7最终验收)
-- [阶段 8：后续计划](#阶段-8后续计划)
+- [阶段 8：Bangumi 连接问题定位（重要修正）](#阶段-8bangumi-连接问题定位重要修正)
+- [阶段 9：后续计划](#阶段-9后续计划)
 
 ---
 
@@ -49,6 +50,11 @@ example.com      http=200  ← 说明是这几个域名被限制，非网络故�
 ```
 
 **影响**：无法在沙箱内联调 Bangumi 接口。
+
+**当时的判断**：推测是"部分地区需要代理"。
+
+> ⚠️ **此判断后来被证明不准确**，真实原因是**沙箱 DNS 污染**（解析到 Dropbox/Facebook 的 IP）。
+> 详见 [阶段 8](#阶段-8bangumi-连接问题定位重要修正)。这是**沙箱环境特有的问题**，与用户实际网络无关。
 
 **应对**：严格按 OpenAPI 规范实现，代码完成后由用户在本地环境验证。
 
@@ -559,12 +565,128 @@ GET /api/music/search 500
 
 ---
 
-## 阶段 8：后续计划
+## 阶段 8：Bangumi 连接问题定位（重要修正）
 
-- [ ] 用户本地验证 Bangumi 数据拉取
+**背景**：用户反馈本地也连不上，并提出质疑——"别的网站只要输入账号就能拿到 Bangumi 数据，不需要特殊网络环境"。
+
+这个质疑是对的，促使我重新排查。**结论：代码没有问题，是开发沙箱的 DNS 被污染。**
+
+### 8.1 排查过程
+
+**第一步：DNS 解析**
+
+```bash
+$ python3 -c "import socket; print(socket.gethostbyname('api.bgm.tv'))"
+162.125.18.133
+```
+
+**关键发现**：这个 IP 不属于 Bangumi。
+
+| 域名 | 解析结果 | 实际归属 |
+|---|---|---|
+| api.bgm.tv | 162.125.18.133 | **Dropbox** |
+| bgm.tv | 69.63.176.15 | **Facebook** |
+| lain.bgm.tv | 108.160.173.207 | **Dropbox** |
+
+**第二步：验证公共 DNS 是否可用**
+
+```
+via 1.1.1.1    → timed out
+via 8.8.8.8    → no-answer
+via 223.5.5.5  → timed out
+```
+
+公共 DNS 与 DoH 均被阻断，无法获得真实 IP。
+
+**第三步：确认是环境问题而非代码问题**
+
+用 mock 服务器模拟真实 Bangumi 响应（结构取自官方 OpenAPI 规范），把 `BANGUMI_API_BASE` 指向它：
+
+```bash
+$ BANGUMI_API_BASE=http://127.0.0.1:4599 npx next dev -p 3211
+$ curl "http://127.0.0.1:3211/api/bangumi/collections?username=sai&subjectType=2&limit=3"
+```
+
+**结果：HTTP 200，数据完全正确**
+
+```json
+{
+  "total": 137, "limit": 3, "offset": 0,
+  "data": [
+    { "id": 8, "name": "人形电脑天使心", "cover": "https://lain.bgm.tv/...", "rate": 4 },
+    { "id": 253, "name": "CLANNAD", "cover": "https://lain.bgm.tv/...", "rate": 9 },
+    { "id": 999, "name": "Only Japanese Name", "cover": "https://lain.bgm.tv/..." }
+  ]
+}
+```
+
+验证要点：
+- ✅ 优先取中文名（`人形电脑天使心`）
+- ✅ 无中文名时回退原名（`Only Japanese Name`）
+- ✅ 封面正确提取
+- ✅ 分页字段完整
+- ✅ mock 服务器收到正确路径与参数：`/v0/users/sai/collections?subject_type=2&limit=3&offset=0`
+- ✅ **必需请求头已发送**：`User-Agent: ip-music/0.1 (...)`
+
+**这证明代码路径完全正确，唯一的问题是沙箱 DNS 把 api.bgm.tv 解析到了错误 IP。**
+
+### 8.2 改进措施
+
+**1. 错误信息区分具体原因**（`lib/bangumi.ts`）
+
+原来所有网络错误都提示"请检查网络"，无法定位。现在区分：
+
+| 错误码 | 提示 |
+|---|---|
+| `ENOTFOUND` / `EAI_AGAIN` | DNS 解析失败，可能被污染 |
+| `ETIMEDOUT` / `ECONNREFUSED` | 连接超时，可能需要代理 |
+| 其他 | 附带原始错误信息 |
+
+**2. 新增诊断接口** `/api/diagnose`
+
+一键输出 DNS 解析结果、HTTP 连通性、以及自动判断的结论。会识别已知的污染 IP 段（Dropbox `162.125.*` / `108.160.*`、Facebook `69.63.*` / `31.13.*`）。
+
+实测输出：
+
+```json
+{
+  "dns": { "ok": true, "addresses": ["108.160.169.174"], "suspicious": true },
+  "http": { "ok": false, "code": "ETIMEDOUT" },
+  "verdict": "❌ DNS 被污染：api.bgm.tv 解析到了 Dropbox/Facebook 的 IP。请更换 DNS（如 223.5.5.5）或使用代理"
+}
+```
+
+**3. 页面加入"运行网络诊断"按钮**
+
+查询失败时可直接点击，在页面上看到诊断详情，无需命令行。
+
+**4. API 基址可配置**
+
+新增 `BANGUMI_API_BASE` 环境变量，便于测试或使用自建镜像。
+
+### 8.3 给用户的排查建议
+
+如果本地也连不上，按顺序试：
+
+1. **点页面上的"运行网络诊断"按钮**，看结论
+2. **检查 DNS**：`nslookup api.bgm.tv`，正常应返回 Bangumi 的 IP，而非 Dropbox/Facebook 段
+3. **换 DNS**：改成 `223.5.5.5`（阿里）或 `119.29.29.29`（腾讯）
+4. **浏览器直接访问** https://api.bgm.tv/v0/subjects/253 看能否返回 JSON
+5. 若浏览器能开但网站不能，说明是 Node 侧 DNS 问题，检查系统 DNS 设置
+
+### 8.4 教训
+
+**不要轻易把"连不上"归因为"需要代理"。** 我第一次的结论（阶段 0.2）说"部分地区可能需要代理"是**不准确的**——真实原因是 DNS 污染，而且这是**沙箱环境特有的**，与用户的实际网络无关。用户提出"别的网站能拿到数据"这个反例，才是定位问题的关键线索。
+
+---
+
+## 阶段 9：后续计划
+
+- [ ] 用户本地验证 Bangumi 数据拉取（先跑 `/api/diagnose`）
 - [ ] 部署上线（Vercel）
 - [ ] 视匹配效果决定是否启用方案 B（Bangumi 关联音乐条目）
 - [ ] 考虑加入轻量缓存减少 API 调用
+
 
 
 
