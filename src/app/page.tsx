@@ -185,16 +185,16 @@ export default function Home() {
     <main className="mx-auto max-w-6xl px-4 py-8">
       {/* 标题 */}
       <header className="mb-8 text-center">
-        <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
-          <span className="text-bgm">IP</span>-Music
+        <h1 className="title-gradient text-4xl font-bold tracking-tight sm:text-5xl">
+          IP-Music
         </h1>
-        <p className="mt-2 text-sm text-slate-400">
+        <p className="mt-3 text-sm text-slate-400">
           输入 Bangumi 用户 ID，收听你收藏作品的相关音乐
         </p>
       </header>
 
       {/* 查询区 */}
-      <section className="mb-8 rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:p-6">
+      <section className="glass mb-8 rounded-2xl p-4 shadow-xl sm:p-6">
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-3 sm:flex-row">
             <input
@@ -203,12 +203,12 @@ export default function Home() {
               onChange={(e) => setUsername(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && loadWorks(0)}
               placeholder="Bangumi 用户 ID，例如 sai"
-              className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 py-2.5 text-sm outline-none transition focus:border-bgm"
+              className="flex-1 rounded-lg border border-slate-700/60 bg-slate-950/70 px-4 py-2.5 text-sm outline-none transition focus:border-bgm focus:ring-2 focus:ring-bgm/30"
             />
             <button
               onClick={() => loadWorks(0)}
               disabled={loadingWorks}
-              className="rounded-lg bg-bgm px-6 py-2.5 text-sm font-medium text-white transition hover:brightness-110 disabled:opacity-50"
+              className="rounded-lg bg-gradient-to-r from-bgm to-rose-400 px-6 py-2.5 text-sm font-medium text-white shadow-lg shadow-bgm/20 transition hover:brightness-110 disabled:opacity-50"
             >
               {loadingWorks ? '查询中…' : '查询'}
             </button>
@@ -305,7 +305,7 @@ export default function Home() {
                   activeWork?.id === w.id ? 'ring-2 ring-bgm rounded-lg' : ''
                 }`}
               >
-                <div className="relative aspect-[3/4] overflow-hidden rounded-lg bg-slate-800">
+                <div className="work-card relative aspect-[3/4] overflow-hidden rounded-lg bg-slate-800 ring-1 ring-white/5">
                   {w.cover ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
@@ -337,7 +337,7 @@ export default function Home() {
               <button
                 onClick={() => loadWorks(offset + PAGE_SIZE, true)}
                 disabled={loadingWorks}
-                className="rounded-lg border border-slate-700 px-6 py-2 text-sm text-slate-300 transition hover:bg-slate-800 disabled:opacity-50"
+                className="rounded-lg border border-slate-700/60 bg-slate-900/40 px-6 py-2 text-sm text-slate-300 backdrop-blur transition hover:border-bgm/50 hover:bg-slate-800/60 disabled:opacity-50"
               >
                 {loadingWorks ? '加载中…' : `加载更多（还有 ${total - works.length} 部）`}
               </button>
@@ -349,7 +349,7 @@ export default function Home() {
       {/* 详情区 */}
       <div ref={detailRef}>
         {activeWork && (
-          <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:p-6">
+          <section className="glass animate-fade-in rounded-2xl p-4 shadow-xl sm:p-6">
             <div className="mb-5 flex items-start gap-4">
               {activeWork.cover && (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -546,7 +546,7 @@ export default function Home() {
         )}
       </div>
 
-      <footer className="mt-12 border-t border-slate-800 pt-6 text-center text-xs text-slate-500">
+      <footer className="mt-12 border-t border-slate-800/60 pt-6 text-center text-xs text-slate-500">
         <p>
           数据来源：Bangumi · B站（官方播放器）· 网易云（歌词）
         </p>

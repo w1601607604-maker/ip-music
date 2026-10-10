@@ -6,7 +6,78 @@
   color-scheme: dark;
 }
 
-/* 歌词滚动条美化 */
+/* ===== 背景：多层渐变 + 光晕 ===== */
+body {
+  background-color: #070a13;
+  background-image:
+    /* 顶部主光晕（Bangumi 粉） */
+    radial-gradient(
+      ellipse 80% 55% at 50% -10%,
+      rgba(240, 145, 153, 0.22),
+      transparent 60%
+    ),
+    /* 左下青色光晕 */
+    radial-gradient(
+      ellipse 60% 50% at 0% 85%,
+      rgba(56, 189, 248, 0.13),
+      transparent 60%
+    ),
+    /* 右下紫色光晕 */
+    radial-gradient(
+      ellipse 55% 45% at 100% 70%,
+      rgba(168, 85, 247, 0.13),
+      transparent 60%
+    ),
+    /* 底部压暗 */
+    linear-gradient(180deg, #070a13 0%, #0b1020 50%, #070a13 100%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
+/* 细网格纹理，增加质感 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.045) 1px, transparent 1px);
+  background-size: 56px 56px;
+  /* 边缘淡出，避免生硬 */
+  mask-image: radial-gradient(ellipse 100% 80% at 50% 0%, #000 25%, transparent 78%);
+  -webkit-mask-image: radial-gradient(ellipse 100% 80% at 50% 0%, #000 25%, transparent 78%);
+}
+
+/* 内容层置于背景之上 */
+body > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ===== 玻璃拟态卡片 ===== */
+.glass {
+  background: linear-gradient(
+    145deg,
+    rgba(30, 41, 59, 0.55),
+    rgba(15, 23, 42, 0.65)
+  );
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+/* ===== 标题渐变文字 ===== */
+.title-gradient {
+  background: linear-gradient(100deg, #f09199 0%, #fbbf24 45%, #38bdf8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* ===== 歌词滚动条 ===== */
 .lyric-scroll::-webkit-scrollbar {
   width: 6px;
 }
@@ -19,4 +90,41 @@
 }
 .lyric-scroll::-webkit-scrollbar-thumb:hover {
   background: rgb(100 116 139);
+}
+
+/* ===== 作品卡片悬浮效果 ===== */
+.work-card {
+  transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.22s ease;
+}
+.work-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 28px -8px rgba(240, 145, 153, 0.35);
+}
+
+/* ===== 淡入动画 ===== */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in {
+  animation: fade-in-up 0.32s ease-out both;
+}
+
+/* 尊重用户的减少动画偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .work-card,
+  .animate-fade-in {
+    transition: none;
+    animation: none;
+  }
+  .work-card:hover {
+    transform: none;
+  }
 }
