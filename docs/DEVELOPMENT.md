@@ -229,22 +229,207 @@ B站官方播放器（站内放全曲，合规）
 
 ## 阶段 2：项目初始化
 
-*（待补充）*
+**提交**：`cbd5e98` feat: 项目骨架与后端 API
+
+### 2.1 技术栈落地
+
+- Next.js 14（App Router）
+- TypeScript（strict）
+- Tailwind CSS
+- 包管理器：pnpm
+
+### 2.2 目录结构
+
+```
+ip-music/
+├── docs/
+│   ├── REQUIREMENTS.md      # 需求文档
+│   └── DEVELOPMENT.md       # 本文档
+├── src/
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── bangumi/collections/route.ts   # 作品列表
+│   │   │   └── music/
+│   │   │       ├── search/route.ts            # B站音乐搜索
+│   │   │       └── lyric/route.ts             # 网易云歌词
+│   │   ├── globals.css
+│   │   ├── layout.tsx
+│   │   └── page.tsx                            # 主页面
+│   └── lib/
+│       ├── types.ts        # 共享类型
+│       ├── bangumi.ts      # Bangumi API 封装
+│       ├── bilibili.ts     # B站搜索封装
+│       └── netease.ts      # 网易云歌词封装
+├── package.json
+├── tsconfig.json
+└── tailwind.config.ts
+```
+
+### 2.3 遇到的问题
+
+**问题 1：tsconfig 缺少 `target` 导致编译失败**
+
+```
+src/lib/netease.ts(68,26): error TS2802: Type 'RegExpStringIterator<RegExpExecArray>'
+  can only be iterated through when using the '--downlevelIteration' flag
+  or with a '--target' of 'es2015' or higher.
+src/lib/netease.ts(166,65): error TS1501: This regular expression flag
+  is only available when targeting 'es6' or later.
+```
+
+**原因**：LRC 解析用了 `matchAll`（需要 ES2015+ 迭代器）和 Unicode 属性正则 `\p{L}`（需要 ES6+）。
+
+**解决**：在 `tsconfig.json` 加 `"target": "ES2020"`。
+
+**注意**：改完后仍报错，因为 `tsconfig.tsbuildinfo` 缓存了旧配置，删除该文件后才生效。
 
 ---
 
 ## 阶段 3：后端 API 实现
 
-*（待补充）*
+**提交**：`cbd5e98` feat: 项目骨架与后端 API
+
+### 3.1 Bangumi 模块（`lib/bangumi.ts`）
+
+- 封装 `fetchUserCollections()`
+- **强制携带 `User-Agent`**（Bangumi 要求）
+- 错误处理：
+  - 404 → 用户不存在
+  - 网络异常 → 提示可能需要代理
+  - 数据格式异常 → 防御性检查
+- `toWorkItem()` 归一化：优先中文名，回退原名
+- 缓存策略：`revalidate: 300`（5 分钟）
+
+### 3.2 B站模块（`lib/bilibili.ts`）
+
+- 封装 `searchMusic()` 与 `searchMusicForWork()`
+- **风控应对**：完整浏览器请求头 + 412 重试（指数退避，最多 3 次）+ 请求间隔 350ms
+- **标题清洗** `cleanKeyword()`：去掉画质标签、括号修饰、字幕说明等噪声，提取适合去网易云搜歌的关键词
+- **多关键词搜索**：`{作品名} OST` / `音乐合集` / `主题曲`，合并去重
+
+### 3.3 网易云模块（`lib/netease.ts`）
+
+- 只使用**歌词**接口（文本元数据），不涉及版权音频
+- `parseLrc()`：解析 LRC 时间轴，支持 `[mm:ss.xx]` 与 `[mm:ss.xxx]` 两种格式
+- `mergeTranslation()`：按时间戳对齐原文与翻译
+- `findLyric()`：搜索 → 最佳匹配打分 → 拉歌词 → 合并
+
+### 3.4 API 路由
+
+| 路由 | 方法 | 说明 |
+|---|---|---|
+| `/api/bangumi/collections` | GET | 作品列表，含参数校验 |
+| `/api/music/search` | GET | B站音乐搜索，超时 60s |
+| `/api/music/lyric` | GET | 歌词，按需调用 |
+
+**参数校验**：用户名限制为 `[A-Za-z0-9_-]{1,32}`，关键词长度限制 100 字符。
 
 ---
 
 ## 阶段 4：前端实现
 
-*（待补充）*
+**提交**：`e650e10` feat: 前端页面与播放器
+
+### 4.1 页面结构
+
+单页应用，三个区域：
+
+1. **查询区**：用户 ID 输入 + 类型筛选（动画/游戏/书籍）+ 状态筛选（全部/看过/在看/想看/搁置/抛弃）
+2. **作品网格**：响应式网格（3~7 列），显示封面 + 名称 + 评分角标
+3. **详情面板**：作品信息 + 播放器 + 歌词区 + 音乐列表
+
+### 4.2 关键交互
+
+- 点击作品卡片 → 加载音乐列表 + 平滑滚动到详情区
+- 点击音乐条目 → 播放器区域加载 B站 iframe
+- 点击"歌词" → 按需请求（**再次点击可折叠**）
+- 点击"网易云" → 新标签页跳转搜索页
+- 分页："加载更多"按钮（每次 50 条）
+
+### 4.3 遇到的问题（重要）
+
+**问题 2：搜索排序质量差，游戏实况/番剧碾压真实音乐**
+
+首次实现用"合集优先（时长 >= 10 分钟）+ 播放量"排序，实测结果：
+
+```
+  85min  治愈催泪神作《CLANNAD》，44集，一口气看完，爆肝18天！   ← 不是音乐
+8304min  【最全合集】《CLANNAD》官方中文版全剧情全成就流程        ← 不是音乐
+  99min  ［CLANNAD音乐合辑］
+ 171min  《CLANNAD ORIGINAL SOUNDTRACK》DISC1/2/3
+ 603min  【英配/720p】CLANNAD～AFTER STORY～ 【合集】【生肉】      ← 不是音乐
+```
+
+**原因**：单纯用时长判断"合集"会把游戏实况（8304 分钟）和番剧合集误判为音乐；播放量加权又让爆款实况排到前面。
+
+**解决**：改为**音乐相关性打分** `scoreMusic()`：
+
+| 规则 | 分值 |
+|---|---|
+| 标题含音乐信号词（OST/原声/主题曲/OP/ED/合集/无损…） | +12 / 个 |
+| 标题含噪声词（一口气看完/全剧情/实况/攻略/生肉/预告/MAD…） | **-40** / 个 |
+| 时长 10 分钟 ~ 6 小时 | +25 |
+| 时长 > 6 小时（基本是番剧/实况） | **-50** |
+| 时长 < 10 分钟（单曲） | +5 |
+| 播放量 | `log10(play) × 3`（对数加权，避免爆款碾压） |
+
+修复后结果：
+
+```
+204min  【GAL】Rewrite OP集&ED集&插入曲&原声集【超高音质】
+ 34min  【收藏向】秒速五厘米 纯音乐|BGM 合集
+183min  【anemoi】OST原声音乐
+208min  CLANNAD ORIGINAL SOUNDTRACK 小镇家族 OST 原声带
+ 99min  ［CLANNAD音乐合辑］
+  4min  《CLANNAD》第二季OP片头曲《時を刻む唄》
+```
+
+游戏实况与番剧已全部排除，OST 专辑排到最前。
 
 ---
 
 ## 阶段 5：联调与验证
 
-*（待补充）*
+### 5.1 验证结果
+
+| 测试项 | 结果 |
+|---|---|
+| `tsc --noEmit` 类型检查 | ✅ 通过 |
+| `next build` 生产构建 | ✅ 通过（3 个 API 路由 + 2 个页面） |
+| 首页渲染 | ✅ HTTP 200，关键 UI 元素齐全 |
+| 音乐搜索 API | ✅ 33 个结果，排序正确 |
+| 歌词 API | ✅ 命中正确歌曲，42 行，含中文翻译 |
+| B站播放器 URL | ✅ HTTP 200，**无 X-Frame-Options 阻断** |
+| 参数校验 | ✅ 空参数 / 非法用户名均返回 400 |
+| 空关键词歌词 | ✅ 返回 400 |
+| 不存在的歌 | ✅ 优雅降级为"这首歌暂无歌词" |
+
+### 5.2 沙箱环境限制
+
+**Bangumi API 在开发沙箱不可达**：
+
+```
+GET /api/bangumi/collections?username=sai
+→ HTTP 502 {"error":"无法连接 Bangumi，请检查网络（部分地区可能需要代理）"}
+```
+
+这是**预期的**（阶段 0.2 已发现该域名在沙箱被限制），错误提示友好，非代码缺陷。
+
+**需要用户在自己的网络环境验证**：作品列表能否正常拉取。
+
+### 5.3 已知限制
+
+1. **B站搜索较慢**：多关键词串行 + 风控间隔，单次约 6~11 秒
+2. **B站搜索可能触发风控**：高频请求返回 412，已做重试但仍可能失败
+3. **歌词匹配依赖标题清洗**：B站标题杂乱时可能匹配到错误歌曲
+4. **仅 30 秒试听的问题已解决**：改用 B站后可播放完整内容
+
+---
+
+## 阶段 6：后续计划
+
+- [ ] 用户本地验证 Bangumi 数据拉取
+- [ ] 部署上线（Vercel）
+- [ ] 视匹配效果决定是否启用方案 B（Bangumi 关联音乐条目）
+- [ ] 考虑加入轻量缓存减少 API 调用
+
