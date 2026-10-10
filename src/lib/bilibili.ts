@@ -51,28 +51,64 @@ function parseDuration(d: string | number): number {
  *
  * B站音乐视频标题通常很杂乱，例如：
  *   "【4K】「进击的巨人」OP1 紅蓮の弓矢 / Linked Horizon【中日字幕】"
- * 需要去掉画质标签、括号修饰、字幕说明等，留下歌名。
+ *   "♫ Red Swan - YOSHIKI & HYDE S3-P1-OP ♪ 中日字幕×Hi-Res"
+ * 需要去掉画质标签、括号修饰、字幕说明、装饰符号等，留下歌名。
  */
 export function cleanKeyword(title: string): string {
   let s = stripHtml(title)
 
-  // 去掉开头的画质/类型标签，如 【4K】【无损】【合集】
+  // 1. 去掉装饰性符号（♫ ♪ ★ ☆ × ✕ 等），它们会干扰搜索
+  s = s.replace(/[♫♪♬♩★☆✦✧×✕✖※→←↑↓▲▼◆◇●○◎§¶]+/g, ' ')
+
+  // 2. 去掉开头的画质/类型标签，如 【4K】【无损】【合集】
   s = s.replace(/^\s*[【\[（(][^】\]）)]*[】\]）)]\s*/g, '')
-  // 去掉所有方括号/书名号内容（通常是修饰说明）
+  // 3. 去掉所有方括号/书名号内容（通常是修饰说明）
   s = s.replace(/[【\[][^】\]]*[】\]]/g, ' ')
-  // 去掉圆括号内容（如 (Live) (Official Video)）
+  // 4. 去掉圆括号内容（如 (Live) (Official Video)）
   s = s.replace(/[（(][^）)]*[）)]/g, ' ')
-  // 去掉常见后缀噪声
-  s = s.replace(
-    /\b(?:MV|PV|OP|ED|OST|Full|Ver\.?|Official|Video|Audio|HD|HQ|4K|1080P|中日字幕|字幕|完整版|无损|合集|音乐|主题曲)\b/gi,
-    ' ',
-  )
-  // 去掉分隔符残留
-  s = s.replace(/[\/|｜·・]+/g, ' ')
-  // 压缩空白
+
+  // 5. 去掉噪声词。
+  //    注意：中文不能用 \b 词边界（CJK 字符不被视为 word char），
+  //    所以中英文分开处理。
+  const noiseWords = [
+    // 英文/数字类（用词边界）
+    'MV', 'PV', 'OP', 'ED', 'OST', 'BGM', 'Full', 'Ver', 'Official',
+    'Video', 'Audio', 'HD', 'HQ', 'Hi-Res', 'HiRes', 'Live', 'TV',
+    'Size', 'Size', 'Remix', 'Cover', 'Short', 'Version',
+    // 中文类（不用词边界）
+    '中日字幕', '中日双语', '中文字幕', '日文字幕', '字幕', '双语',
+    '完整版', '无损', '合集', '合辑', '音乐', '音楽', '主题曲',
+    '片头曲', '片尾曲', '原声', '原声带', '高音质', '超高音质',
+    '清晰版', '内嵌', '收藏向', '纯音乐', '单曲', '循环',
+  ]
+
+  for (const w of noiseWords) {
+    if (/^[A-Za-z0-9-]+$/.test(w)) {
+      // 英文词：用词边界，避免误伤（如 "OP" 不应匹配 "OPEN"）
+      s = s.replace(new RegExp(`\\b${w}\\b`, 'gi'), ' ')
+    } else {
+      // 中文词：直接替换
+      s = s.replace(new RegExp(w, 'g'), ' ')
+    }
+  }
+
+  // 6. 去掉画质数字标签（4K / 1080P / 720P）
+  s = s.replace(/\b\d{3,4}[PpKk]\b/g, ' ')
+
+  // 7. 去掉分隔符残留
+  s = s.replace(/[\/|｜·・~～\-—–_]+/g, ' ')
+
+  // 8. 去掉孤立的标点和多余空白
+  s = s.replace(/[「」『』【】\[\]（）()《》〈〉]/g, ' ')
   s = s.replace(/\s+/g, ' ').trim()
 
-  return s || stripHtml(title).trim()
+  // 9. 如果清洗后太短（说明噪声词占了大半），回退到原始标题
+  const cleaned = s.replace(/[^\p{L}\p{N}]/gu, '')
+  if (cleaned.length < 2) {
+    return stripHtml(title).replace(/\s+/g, ' ').trim()
+  }
+
+  return s
 }
 
 /** 音乐强信号词：标题里出现这些，几乎可以确定是音乐内容 */

@@ -63,6 +63,18 @@ function parseLrc(lrc: string): { time: number; text: string }[] {
   const out: { time: number; text: string }[] = []
   const lines = lrc.split('\n')
 
+  // 有些歌词（尤其是翻唱/用户上传）完全没有 [mm:ss] 时间轴，是纯文本。
+  // 这种情况按行顺序输出，时间戳用行号占位，保证歌词仍能显示。
+  const hasAnyTimeTag = /\[\d{1,2}:\d{2}/.test(lrc)
+
+  if (!hasAnyTimeTag) {
+    return lines
+      .map((l) => l.replace(/\[[^\]]*\]/g, '').trim())
+      // 过滤元信息行（作词/作曲/编曲等）
+      .filter((t) => t && !/^(作词|作曲|编曲|混音|母带|制作人|出品|监制|录音|吉他|贝斯|鼓|键盘|和声|统筹|发行|策划|OP|SP)\s*[:：]/.test(t))
+      .map((text, i) => ({ time: i * 1000, text }))
+  }
+
   for (const line of lines) {
     // 匹配 [mm:ss.xx] 或 [mm:ss.xxx]，一行可能有多个时间标签
     const timeTags = [...line.matchAll(/\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g)]
@@ -166,23 +178,63 @@ export async function findLyric(keyword: string): Promise<LyricResult> {
     s.toLowerCase().replace(/\s+/g, '').replace(/[^\p{L}\p{N}]/gu, '')
 
   const target = norm(kw)
-  let best = songs[0]
-  let bestScore = -1
 
-  for (const s of songs) {
+  /** 翻唱/改编类噪声词：这些版本往往没有官方歌词，需降权 */
+  const COVER_SIGNALS = [
+    '翻自', '翻唱', 'cover', '改编', 'remix', '混音',
+    '钢琴', 'piano', '吉他', 'guitar', '纯音乐', 'instrumental',
+    '伴奏', '八音盒', 'music box', '口琴', '小提琴', 'violin',
+    'dj', '加速版', '慢速版', '鬼畜', '恶搞',
+  ]
+
+  /** 给候选歌曲打分，分数越高越可能是"原曲" */
+  function scoreSong(s: NeteaseSong, index: number): number {
     const n = norm(s.name)
+    const nameLower = s.name.toLowerCase()
     let score = 0
-    if (n === target) score = 100
-    else if (n.includes(target) || target.includes(n)) score = 60
-    // 越靠前的结果给一点加权
-    score -= songs.indexOf(s) * 0.5
-    if (score > bestScore) {
-      bestScore = score
-      best = s
+
+    // 歌名相似度
+    if (n === target) score += 100
+    else if (n.includes(target) || target.includes(n)) score += 60
+    else {
+      // 部分词匹配：按共同字符比例给分
+      const common = [...new Set(target)].filter((c) => n.includes(c)).length
+      score += (common / Math.max(target.length, 1)) * 30
     }
+
+    // 翻唱/改编降权
+    for (const sig of COVER_SIGNALS) {
+      if (nameLower.includes(sig)) score -= 45
+    }
+
+    // 歌名里带括号补充说明的，通常是翻唱或特殊版本
+    if (/[（(].+[）)]/.test(s.name)) score -= 12
+
+    // 越靠前的搜索结果给一点加权（网易云相关度排序）
+    score -= index * 0.8
+
+    return score
   }
 
-  const { lrc, tlyric } = await fetchLyricById(best.id)
+  // 按分数排序候选，依次尝试直到找到有歌词的
+  const ranked = songs
+    .map((s, i) => ({ song: s, score: scoreSong(s, i) }))
+    .sort((a, b) => b.score - a.score)
+
+  let best = ranked[0].song
+  let lrc = ''
+  let tlyric = ''
+
+  // 最多尝试前 3 个候选，避免匹配到无歌词的翻唱
+  for (const { song } of ranked.slice(0, 3)) {
+    const r = await fetchLyricById(song.id)
+    if (r.lrc.trim()) {
+      best = song
+      lrc = r.lrc
+      tlyric = r.tlyric
+      break
+    }
+  }
 
   if (!lrc.trim()) {
     return {
