@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+/* 歌词滚动条美化 */
+.lyric-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.lyric-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.lyric-scroll::-webkit-scrollbar-thumb {
+  background: rgb(71 85 105);
+  border-radius: 3px;
+}
+.lyric-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgb(100 116 139);
+}
