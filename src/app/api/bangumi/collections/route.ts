@@ -6,7 +6,7 @@ import {
   MAX_LIMIT,
 } from '@/lib/bangumi'
 
-export const runtime = 'edge'
+export const runtime = 'nodejs'
 
 /**
  * GET /api/bangumi/collections

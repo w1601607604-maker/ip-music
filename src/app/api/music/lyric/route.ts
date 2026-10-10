@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { findLyric, NeteaseError } from '@/lib/netease'
 
-export const runtime = 'edge'
+export const runtime = 'nodejs'
 
 /**
  * GET /api/music/lyric?keyword={关键词}

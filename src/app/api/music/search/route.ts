@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { searchMusicForWork, BilibiliError } from '@/lib/bilibili'
 
-export const runtime = 'edge'
+export const runtime = 'nodejs'
 // 注意：Edge Runtime 不支持 maxDuration，超时由平台限制决定。
 // B站搜索为多关键词串行 + 风控间隔，单次约 6~11 秒，在平台限制内。
 
