@@ -13,6 +13,8 @@
 import type { MusicItem } from './types'
 
 const BILI_SEARCH = 'https://api.bilibili.com/x/web-interface/search/type'
+/** 综合搜索端点：对服务器 IP 风控更宽松，且无需 Cookie */
+const BILI_SEARCH_ALL = 'https://api.bilibili.com/x/web-interface/search/all/v2'
 const BILI_HOME = 'https://www.bilibili.com/'
 
 const UA =
@@ -218,12 +220,90 @@ function scoreMusic(item: MusicItem): number {
 }
 
 /**
+ * 从 /all/v2 的响应中提取视频列表。
+ *
+ * /all/v2 返回的是按类型分组的结构：
+ *   { data: { result: [ { result_type: 'video', data: [...] }, ... ] } }
+ * 需要找到 result_type === 'video' 的那一组。
+ */
+function extractVideosFromAllV2(json: any): any[] {
+  const groups: any[] = json?.data?.result || []
+  for (const g of groups) {
+    if (g?.result_type === 'video') {
+      return Array.isArray(g.data) ? g.data : []
+    }
+  }
+  return []
+}
+
+/** 把 B站原始视频对象转成 MusicItem */
+function toMusicItem(r: any): MusicItem | null {
+  if (!r?.bvid) return null
+  const title = stripHtml(r.title || '')
+  return {
+    bvid: r.bvid,
+    title,
+    author: r.author || '',
+    cover: r.pic
+      ? r.pic.startsWith('//')
+        ? `https:${r.pic}`
+        : r.pic
+      : undefined,
+    duration: parseDuration(r.duration),
+    play: typeof r.play === 'number' ? r.play : 0,
+    keyword: cleanKeyword(title),
+  }
+}
+
+/**
  * 搜索 B站音乐视频
+ *
+ * 使用 /x/web-interface/search/all/v2 端点（而非 /search/type）。
+ *
+ * 原因：/search/type 对服务器/数据中心 IP 有严格风控，会稳定返回 412；
+ * /all/v2 对同样的 IP 可正常返回，且无需 Cookie。
+ * 参考：https://github.com/Panniantong/Agent-Reach/issues/180
+ *
+ * 若 /all/v2 失败，回退到 /search/type（带 Cookie）作为兜底。
  *
  * @param keyword 搜索关键词
  * @param page 页码
  */
 export async function searchMusic(
+  keyword: string,
+  page = 1,
+): Promise<MusicItem[]> {
+  // ---- 主方案：/all/v2（无需 Cookie，对服务器 IP 友好）----
+  try {
+    const params = new URLSearchParams({ keyword, page: String(page) })
+    const res = await fetch(`${BILI_SEARCH_ALL}?${params}`, {
+      headers: HEADERS,
+      cache: 'no-store',
+      signal: AbortSignal.timeout(15000),
+    })
+
+    if (res.ok) {
+      const json = await res.json()
+      if (json?.code === 0) {
+        const videos = extractVideosFromAllV2(json)
+        const items = videos
+          .map(toMusicItem)
+          .filter((x): x is MusicItem => x !== null)
+        if (items.length > 0) return items
+        // 返回成功但无结果，直接返回空数组（不必回退）
+        return []
+      }
+    }
+  } catch {
+    // 落入下方的回退方案
+  }
+
+  // ---- 回退方案：/search/type（带 Cookie）----
+  return searchMusicLegacy(keyword, page)
+}
+
+/** 回退方案：旧搜索端点（需要 Cookie，服务器 IP 可能被 412） */
+async function searchMusicLegacy(
   keyword: string,
   page = 1,
 ): Promise<MusicItem[]> {
@@ -244,6 +324,7 @@ export async function searchMusic(
       res = await fetch(`${BILI_SEARCH}?${params}`, {
         headers,
         cache: 'no-store',
+        signal: AbortSignal.timeout(15000),
       })
 
       // 412 = 被风控，等待后重试；重试时清掉缓存的 Cookie 重新获取
@@ -287,23 +368,9 @@ export async function searchMusic(
   }
 
   const results: any[] = json?.data?.result || []
-
-  const items: MusicItem[] = results
-    .filter((r) => r?.bvid)
-    .map((r) => {
-      const title = stripHtml(r.title || '')
-      return {
-        bvid: r.bvid,
-        title,
-        author: r.author || '',
-        cover: r.pic ? (r.pic.startsWith('//') ? `https:${r.pic}` : r.pic) : undefined,
-        duration: parseDuration(r.duration),
-        play: typeof r.play === 'number' ? r.play : 0,
-        keyword: cleanKeyword(title),
-      }
-    })
-
-  return items
+  return results
+    .map(toMusicItem)
+    .filter((x): x is MusicItem => x !== null)
 }
 
 /**
