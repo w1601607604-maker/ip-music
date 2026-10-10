@@ -75,9 +75,51 @@ export function cleanKeyword(title: string): string {
   return s || stripHtml(title).trim()
 }
 
-/** 判断是否为合集类内容（时长长，通常是 OST 合集） */
-function isCollection(durationSec: number): boolean {
-  return durationSec >= 10 * 60 // 10 分钟以上视为合集
+/** 音乐强信号词：标题里出现这些，几乎可以确定是音乐内容 */
+const MUSIC_SIGNALS = [
+  'ost', 'original soundtrack', '原声', 'サウンドトラック',
+  'op', 'ed', '主题曲', '片头曲', '片尾曲', '插曲', '插入曲',
+  '音乐', '音楽', '歌单', '专辑', 'album', 'bgm',
+  '合集', '合辑', '全曲', '无损', '歌曲',
+]
+
+/** 噪声词：出现这些说明不是音乐（实况/番剧/解说等） */
+const NOISE_SIGNALS = [
+  '一口气看完', '全剧情', '流程', '实况', '解说', '攻略', '通关',
+  '第一集', '第1集', '生肉', '熟肉', '总集篇', '剧场版', '全集',
+  '预告', 'pv', 'mad', 'amv', '剪辑', '混剪', 'reaction', '反应',
+  '吐槽', '影评', '漫评', '排行', 'top', '盘点', '推荐',
+  'galgame', '游戏实况', '直播', '录播',
+]
+
+/**
+ * 给视频打分，用于排序。
+ * 分数越高越可能是"用户想听的音乐"。
+ */
+function scoreMusic(item: MusicItem): number {
+  const t = item.title.toLowerCase()
+  let score = 0
+
+  // 音乐信号加分
+  for (const s of MUSIC_SIGNALS) {
+    if (t.includes(s)) score += 12
+  }
+
+  // 噪声信号大幅减分
+  for (const s of NOISE_SIGNALS) {
+    if (t.includes(s)) score -= 40
+  }
+
+  // 时长：10 分钟 ~ 6 小时之间最可能是音乐合集
+  const d = item.duration
+  if (d >= 10 * 60 && d <= 6 * 3600) score += 25
+  else if (d > 6 * 3600) score -= 50 // 超长基本是番剧/实况
+  else if (d > 0 && d < 10 * 60) score += 5 // 单曲，也不错
+
+  // 播放量：对数加权，避免爆款实况碾压
+  if (item.play > 0) score += Math.log10(item.play) * 3
+
+  return score
 }
 
 /**
@@ -203,13 +245,8 @@ export async function searchMusicForWork(workName: string): Promise<MusicItem[]>
     throw new BilibiliError('未找到相关音乐，请稍后重试')
   }
 
-  // 排序：合集优先，然后按播放量
-  merged.sort((a, b) => {
-    const ca = isCollection(a.duration) ? 1 : 0
-    const cb = isCollection(b.duration) ? 1 : 0
-    if (ca !== cb) return cb - ca
-    return b.play - a.play
-  })
+  // 排序：音乐相关性打分，高分在前
+  merged.sort((a, b) => scoreMusic(b) - scoreMusic(a))
 
   return merged
 }
