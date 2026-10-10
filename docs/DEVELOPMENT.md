@@ -535,16 +535,35 @@ veiling the dark
 **现象**：在 `next dev` 运行期间执行 `next build`，之后 dev server 开始报错：
 
 ```
-Error: Cannot find module '.../.next/server/...'
-code: 'MODULE_NOT_FOUND'
-GET /api/music/search 500
+Error: Cannot find module './782.js'
+Require stack:
+- /home/starlight/ip-music/.next/server/webpack-runtime.js
+- /home/starlight/ip-music/.next/server/pages/_document.js
+...
+This error happened while generating the page.
 ```
 
 **根因**：`next dev` 与 `next build` **共用 `.next` 目录**。build 会覆写该目录，导致正在运行的 dev server 加载到不一致的产物。
 
-**解决**：停止 dev server → `rm -rf .next` → 重新启动。
+**临时解决**：停止 dev server → `rm -rf .next` → 重新启动。
 
 **注意**：这会让**所有接口都返回 500**，容易被误判为代码缺陷。排查时应先看 dev server 日志，确认是否为 `MODULE_NOT_FOUND` 而非业务错误。
+
+#### 6.4.1 根治方案（重要）
+
+上述"临时解决"治标不治本 —— 开发过程中很容易忘记，导致**同一个问题反复出现**（本项目实际踩了两次）。
+
+**最终解决**：新增 `next.config.js`，让开发与构建使用**不同的输出目录**：
+
+```js
+distDir: process.env.NODE_ENV === 'development' ? '.next-dev' : '.next',
+```
+
+同时把 `.next-dev` 加入 `.gitignore`。
+
+**验证**：在 dev server 运行期间执行 `next build`，之后 dev server 仍正常响应（HTTP 200，无模块错误），接口也正常。
+
+**教训**：遇到会反复发生的环境问题，应该**从配置层面根治**，而不是每次手动清理。第一次踩坑时只记录了"手动删 `.next`"，结果第二次又踩了同一个坑。
 
 ---
 
