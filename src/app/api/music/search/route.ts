@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { searchMusicForWork, BilibiliError } from '@/lib/bilibili'
 
-export const runtime = 'nodejs'
-/** B站搜索较慢（多关键词串行 + 间隔），给足超时 */
-export const maxDuration = 60
+export const runtime = 'edge'
+// 注意：Edge Runtime 不支持 maxDuration，超时由平台限制决定。
+// B站搜索为多关键词串行 + 风控间隔，单次约 6~11 秒，在平台限制内。
 
 /**
  * GET /api/music/search?name={作品名}

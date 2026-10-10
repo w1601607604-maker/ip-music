@@ -64,9 +64,11 @@ export async function fetchUserCollections(
         'User-Agent': USER_AGENT,
         Accept: 'application/json',
       },
-      // 收藏数据变化不频繁，缓存 5 分钟
+      // 收藏数据变化不频繁，缓存 5 分钟。
+      // 用标准 Cache-Control 而非 next.revalidate，以兼容 Edge Runtime。
+      cf: { cacheTtl: 300, cacheEverything: true },
       next: { revalidate: 300 },
-    })
+    } as RequestInit)
   } catch (e) {
     // 区分 DNS 解析失败与其他网络错误，便于定位问题
     const cause = (e as any)?.cause

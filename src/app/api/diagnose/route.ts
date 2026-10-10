@@ -1,45 +1,66 @@
 import { NextResponse } from 'next/server'
-import { promises as dns } from 'node:dns'
 
-export const runtime = 'nodejs'
+export const runtime = 'edge'
 
 /**
  * GET /api/diagnose
  *
  * 诊断 Bangumi 连通性，帮助定位是 DNS、网络还是 API 问题。
- * 不依赖任何外部参数，随时可访问。
+ *
+ * 使用 DNS-over-HTTPS（而非 node:dns）查询，原因：
+ *  1. 兼容 Cloudflare Pages 的 Edge Runtime（无 node:dns）
+ *  2. DoH 由外部解析器返回结果，能对比出本地 DNS 是否被污染
  */
 export async function GET() {
   const result: Record<string, unknown> = {
     timestamp: new Date().toISOString(),
-    node: process.version,
+    runtime: 'edge',
   }
 
-  // 1. DNS 解析
+  // 1. 通过 DoH 查询 api.bgm.tv 的真实解析结果
+  let dohAddresses: string[] = []
+  let dohError: string | null = null
+
   try {
-    const addrs = await dns.resolve4('api.bgm.tv').catch(() => [] as string[])
-    result.dns = {
-      ok: addrs.length > 0,
-      addresses: addrs,
-      // 已知的污染特征：解析到 Dropbox / Facebook / 其他无关服务的 IP 段
-      suspicious: addrs.some(
-        (ip) =>
-          ip.startsWith('162.125.') || // Dropbox
-          ip.startsWith('108.160.') || // Dropbox
-          ip.startsWith('69.63.') || // Facebook
-          ip.startsWith('31.13.') || // Facebook
-          ip.startsWith('157.240.') || // Facebook
-          ip.startsWith('179.60.') || // Facebook
-          ip.startsWith('185.60.') || // Facebook
-          ip.startsWith('127.') || // 本地回环（DNS 劫持常见特征）
-          ip === '0.0.0.0',
-      ),
+    const res = await fetch(
+      'https://doh.pub/dns-query?name=api.bgm.tv&type=A',
+      {
+        headers: { accept: 'application/dns-json' },
+        signal: AbortSignal.timeout(8000),
+      },
+    )
+    if (res.ok) {
+      const data = await res.json()
+      dohAddresses = (data?.Answer || [])
+        .filter((a: any) => a?.type === 1)
+        .map((a: any) => a.data)
+    } else {
+      dohError = `DoH 返回 HTTP ${res.status}`
     }
   } catch (e) {
-    result.dns = { ok: false, error: String(e) }
+    dohError = String((e as any)?.message || e)
   }
 
-  // 2. HTTPS 连通性
+  result.dns = {
+    ok: dohAddresses.length > 0,
+    addresses: dohAddresses,
+    error: dohError,
+    // 已知的污染特征：解析到 Dropbox / Facebook / 其他无关服务的 IP 段
+    suspicious: dohAddresses.some(
+      (ip) =>
+        ip.startsWith('162.125.') || // Dropbox
+        ip.startsWith('108.160.') || // Dropbox
+        ip.startsWith('69.63.') || // Facebook
+        ip.startsWith('31.13.') || // Facebook
+        ip.startsWith('157.240.') || // Facebook
+        ip.startsWith('179.60.') || // Facebook
+        ip.startsWith('185.60.') || // Facebook
+        ip.startsWith('127.') || // 本地回环（DNS 劫持常见特征）
+        ip === '0.0.0.0',
+    ),
+  }
+
+  // 2. HTTPS 连通性（这是真正决定功能是否可用的指标）
   const started = Date.now()
   try {
     const res = await fetch('https://api.bgm.tv/v0/subjects/253', {
@@ -52,18 +73,17 @@ export async function GET() {
       elapsedMs: Date.now() - started,
     }
   } catch (e) {
-    const cause = (e as any)?.cause
     result.http = {
       ok: false,
       elapsedMs: Date.now() - started,
       error: String((e as any)?.message || e),
-      code: cause?.code || (e as any)?.code || null,
+      code: (e as any)?.cause?.code || (e as any)?.code || null,
     }
   }
 
   // 3. 结论
-  const dnsInfo = result.dns as any
   const httpInfo = result.http as any
+  const dnsInfo = result.dns as any
 
   if (httpInfo.ok) {
     result.verdict = '✅ Bangumi 可正常访问，功能应可正常使用'
@@ -71,9 +91,10 @@ export async function GET() {
     result.verdict =
       '❌ DNS 被污染：api.bgm.tv 解析到了 Dropbox/Facebook 的 IP。请更换 DNS（如 223.5.5.5）或使用代理'
   } else if (!dnsInfo?.ok) {
-    result.verdict = '❌ DNS 解析失败：无法解析 api.bgm.tv，请检查 DNS 设置'
+    result.verdict = '⚠️ 无法通过 DoH 查询 DNS，但 HTTPS 请求也失败了，详见 http 字段'
   } else if (httpInfo.code === 'ETIMEDOUT') {
-    result.verdict = '❌ 连接超时：DNS 正常但连不上，可能需要代理'
+    result.verdict =
+      '❌ 连接超时：DNS 正常但连不上，可能是 SNI 阻断或需要代理'
   } else {
     result.verdict = '❌ 无法访问 Bangumi，详见上方 http 字段'
   }
