@@ -21,13 +21,18 @@ export async function GET() {
     result.dns = {
       ok: addrs.length > 0,
       addresses: addrs,
-      // 已知的污染特征：解析到 Dropbox / Facebook 的 IP 段
+      // 已知的污染特征：解析到 Dropbox / Facebook / 其他无关服务的 IP 段
       suspicious: addrs.some(
         (ip) =>
           ip.startsWith('162.125.') || // Dropbox
-          ip.startsWith('69.63.') || // Facebook
           ip.startsWith('108.160.') || // Dropbox
-          ip.startsWith('31.13.'), // Facebook
+          ip.startsWith('69.63.') || // Facebook
+          ip.startsWith('31.13.') || // Facebook
+          ip.startsWith('157.240.') || // Facebook
+          ip.startsWith('179.60.') || // Facebook
+          ip.startsWith('185.60.') || // Facebook
+          ip.startsWith('127.') || // 本地回环（DNS 劫持常见特征）
+          ip === '0.0.0.0',
       ),
     }
   } catch (e) {
