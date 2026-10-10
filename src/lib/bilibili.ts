@@ -4,22 +4,81 @@
  * 使用 B站官方 web 接口搜索视频，用于找到作品相关的音乐视频。
  * 播放通过 B站官方 iframe 播放器（player.bilibili.com），合规且稳定。
  *
- * ⚠️ 实测注意：该接口有风控，连续快速请求会返回 HTTP 412。
- *    应对：带完整浏览器请求头 + 请求间隔 + 失败重试。
+ * ⚠️ 风控说明（实测）：
+ *   不带 Cookie 请求搜索接口会稳定返回 HTTP 412（被风控拦截）。
+ *   解决：先访问 B站首页获取 buvid3 Cookie，再带上它请求搜索接口。
+ *   buvid3 是 B站的设备标识 Cookie，无需登录即可获取。
  */
 
 import type { MusicItem } from './types'
 
 const BILI_SEARCH = 'https://api.bilibili.com/x/web-interface/search/type'
+const BILI_HOME = 'https://www.bilibili.com/'
+
+const UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 /** 完整浏览器请求头，降低风控概率 */
 const HEADERS: Record<string, string> = {
-  'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'User-Agent': UA,
   Referer: 'https://www.bilibili.com/',
   Origin: 'https://www.bilibili.com',
   Accept: 'application/json, text/plain, */*',
   'Accept-Language': 'zh-CN,zh;q=0.9,ja;q=0.8,en;q=0.7',
+}
+
+/**
+ * 缓存的 Cookie 字符串。
+ * 模块级变量在 Edge/Node 的同一 isolate 内会复用，减少重复请求。
+ */
+let cachedCookie: string | null = null
+let cookieExpireAt = 0
+const COOKIE_TTL = 30 * 60 * 1000 // 30 分钟
+
+/**
+ * 获取 B站 Cookie（主要是 buvid3）。
+ *
+ * 方式：请求 B站首页，从 Set-Cookie 响应头中提取。
+ * 这是 B站给匿名访客分配设备标识的正常流程，不涉及登录。
+ */
+async function getBilibiliCookie(): Promise<string> {
+  const now = Date.now()
+  if (cachedCookie && now < cookieExpireAt) return cachedCookie
+
+  try {
+    const res = await fetch(BILI_HOME, {
+      headers: { 'User-Agent': UA, Accept: 'text/html' },
+      signal: AbortSignal.timeout(8000),
+    })
+
+    // 从 Set-Cookie 中提取需要的字段
+    const setCookies = res.headers.getSetCookie?.() || []
+    const wanted: string[] = []
+
+    for (const c of setCookies) {
+      const kv = c.split(';')[0]
+      if (/^(buvid3|buvid4|b_nut|buvid_fp|_uuid)=/.test(kv)) {
+        wanted.push(kv)
+      }
+    }
+
+    if (wanted.length > 0) {
+      cachedCookie = wanted.join('; ')
+      cookieExpireAt = now + COOKIE_TTL
+      return cachedCookie
+    }
+  } catch {
+    // 获取失败不阻断，退回不带 Cookie 请求（可能仍被 412 拦截）
+  }
+
+  // 兜底：使用格式合法的 buvid3（B站对格式有校验，但真实值更可靠）
+  return 'buvid3=A1B2C3D4-1234-5678-9012-34567890123456789infoc; b_nut=1700000000'
+}
+
+/** 带 Cookie 的请求头 */
+async function headersWithCookie(): Promise<Record<string, string>> {
+  const cookie = await getBilibiliCookie()
+  return { ...HEADERS, Cookie: cookie }
 }
 
 export class BilibiliError extends Error {
@@ -180,13 +239,17 @@ export async function searchMusic(
   // 风控重试：最多 3 次，指数退避
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
+      // 每次重试都重新取 Cookie（首次会请求首页获取 buvid3）
+      const headers = await headersWithCookie()
       res = await fetch(`${BILI_SEARCH}?${params}`, {
-        headers: HEADERS,
+        headers,
         cache: 'no-store',
       })
 
-      // 412 = 被风控，等待后重试
+      // 412 = 被风控，等待后重试；重试时清掉缓存的 Cookie 重新获取
       if (res.status === 412) {
+        cachedCookie = null
+        cookieExpireAt = 0
         await new Promise((r) => setTimeout(r, 800 * (attempt + 1)))
         continue
       }
@@ -205,7 +268,7 @@ export async function searchMusic(
 
   if (res.status === 412) {
     throw new BilibiliError(
-      'B站搜索请求过于频繁，请稍后再试',
+      'B站风控拦截（HTTP 412）：搜索接口拒绝了本次请求，请稍后重试',
       412,
     )
   }
@@ -260,6 +323,7 @@ export async function searchMusicForWork(workName: string): Promise<MusicItem[]>
 
   const seen = new Set<string>()
   const merged: MusicItem[] = []
+  const errors: string[] = []
 
   for (const q of queries) {
     try {
@@ -270,15 +334,24 @@ export async function searchMusicForWork(workName: string): Promise<MusicItem[]>
         merged.push(it)
       }
     } catch (e) {
-      // 单个关键词失败不影响整体，但要记录
-      console.warn(`[bilibili] 搜索「${q}」失败：`, e)
+      // 记录失败原因，若全部失败则把真实原因抛给用户
+      const msg = e instanceof Error ? e.message : String(e)
+      errors.push(msg)
+      console.warn(`[bilibili] 搜索「${q}」失败：`, msg)
     }
     // 请求间隔，规避风控
     await new Promise((r) => setTimeout(r, 350))
   }
 
   if (merged.length === 0) {
-    throw new BilibiliError('未找到相关音乐，请稍后重试')
+    // 把真实错误暴露出来，而不是笼统的"未找到相关音乐"
+    const unique = [...new Set(errors)]
+    if (unique.length > 0) {
+      throw new BilibiliError(unique.join('；'))
+    }
+    throw new BilibiliError(
+      `未找到「${workName}」相关的音乐内容，可尝试换个作品或稍后重试`,
+    )
   }
 
   // 排序：音乐相关性打分，高分在前
