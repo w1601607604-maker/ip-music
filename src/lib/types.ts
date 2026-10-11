@@ -79,6 +79,8 @@ export interface WorkItem {
   id: number
   name: string
   nameCn?: string
+  /** 原名（通常是日文），用于补充网易云搜索关键词 */
+  nameOriginal?: string
   cover?: string
   subjectType: number
   collectionType: number

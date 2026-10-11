@@ -4,9 +4,11 @@ import { searchSongsForWork, NeteaseError } from '@/lib/netease'
 export const runtime = 'nodejs'
 
 /**
- * GET /api/netease/songs?name=CLANNAD
+ * GET /api/netease/songs?name=CLANNAD&alt=クラナド
  *
  * 按作品名搜索网易云曲目列表。
+ * alt 为原名（通常是日文），用于补充搜索 —— 中文译名在网易云
+ * 常常搜不到对应 OST（命运石之门 → STEINS;GATE）。
  *
  * 这是主链路的第一步：作品名 → 网易云曲目（曲名/歌手/专辑）。
  * 不涉及 B站，因此不受 B站风控影响。
@@ -14,6 +16,7 @@ export const runtime = 'nodejs'
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const name = (searchParams.get('name') || '').trim()
+  const alt = (searchParams.get('alt') || '').trim()
 
   if (!name) {
     return NextResponse.json({ error: '缺少 name 参数' }, { status: 400 })
@@ -24,7 +27,7 @@ export async function GET(req: Request) {
   }
 
   try {
-    const data = await searchSongsForWork(name)
+    const data = await searchSongsForWork(name, 30, alt || undefined)
     return NextResponse.json({ data })
   } catch (e) {
     const message =

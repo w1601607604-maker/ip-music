@@ -135,8 +135,11 @@ export default function Home() {
     )
 
     try {
+      const altParam = work.nameOriginal
+        ? `&alt=${encodeURIComponent(work.nameOriginal)}`
+        : ''
       const res = await fetch(
-        `/api/netease/songs?name=${encodeURIComponent(work.name)}`,
+        `/api/netease/songs?name=${encodeURIComponent(work.name)}${altParam}`,
       )
       const json = await res.json()
 

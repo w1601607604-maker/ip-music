@@ -121,11 +121,16 @@ export async function fetchUserCollections(
 /** 把 Bangumi 收藏项归一化成前端用的 WorkItem */
 export function toWorkItem(c: UserCollection): WorkItem {
   const s = c.subject
+  const nameCn = s?.name_cn?.trim() || ''
+  const nameOriginal = s?.name?.trim() || ''
   return {
     id: c.subject_id,
     // 优先中文名，回退原名
-    name: s?.name_cn?.trim() || s?.name || `条目 #${c.subject_id}`,
+    name: nameCn || nameOriginal || `条目 #${c.subject_id}`,
     nameCn: s?.name_cn,
+    // 原名（通常是日文），用于在网易云搜索时补充关键词
+    // 例：命运石之门 → STEINS;GATE，中文名在网易云搜不到
+    nameOriginal: nameOriginal || undefined,
     cover: s?.images?.common || s?.images?.medium || s?.images?.large,
     subjectType: c.subject_type,
     collectionType: c.type,

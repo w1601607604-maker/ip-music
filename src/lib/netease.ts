@@ -96,9 +96,15 @@ function toSongItem(s: NeteaseSong): NeteaseSongItem {
 export async function searchSongsForWork(
   workName: string,
   limit = 30,
+  altName?: string,
 ): Promise<NeteaseSongItem[]> {
   const name = workName.trim()
   if (!name) return []
+
+  // 备用名（通常是日文原名），用于补充搜索
+  // 例：命运石之门 → STEINS;GATE，中文名在网易云搜不到对应 OST
+  const alt = altName?.trim() || ''
+  const hasAlt = alt.length > 0 && alt !== name
 
   const seen = new Set<number>()
   const merged: NeteaseSongItem[] = []
@@ -129,20 +135,44 @@ export async function searchSongsForWork(
    *   - 作品名含中文 → 放宽（无法据此判断，交给网易云的相关度排序）
    */
   const isRelevant = (s: NeteaseSong): boolean => {
-    const norm = (x: string) =>
-      x.toLowerCase().replace(/\s+/g, '').replace(/[^\p{L}\p{N}]/gu, '')
-    const w = norm(name)
-    if (!w) return true
+    const w = normalizeName(name)
+    const wa = hasAlt ? normalizeName(alt) : ''
+    if (!w && !wa) return true
 
-    const songName = norm(s.name || '')
-    const albumName = norm(s.al?.name || s.album?.name || '')
-    if (songName.includes(w) || albumName.includes(w)) return true
+    const songName = normalizeName(s.name || '')
+    const albumName = normalizeName(s.al?.name || s.album?.name || '')
 
-    // 作品名含中文 → 无法用名称判断相关性，放行
-    if (/[\u4e00-\u9fff]/.test(name)) return true
+    // 1 & 2：名称直接包含（繁简已归一）
+    if (w && (songName.includes(w) || albumName.includes(w))) return true
+    // 原名匹配（命运石之门 → STEINS;GATE）
+    if (wa && (songName.includes(wa) || albumName.includes(wa))) return true
 
-    // 纯 ASCII 作品名 → 启用严格过滤
+    // 3：中文作品名 —— 用最长公共子串应对译名差异
+    //    （少女歌剧 vs 少女☆歌劇 レヴュースタァライト）
+    if (/[\u4e00-\u9fff]/.test(name) && w.length >= 3) {
+      const lcs = longestCommonSubstring(w, albumName)
+      if (lcs >= Math.ceil(w.length * 0.6)) return true
+    }
+
     return false
+  }
+
+  /** 最长公共子串长度，用于判断名称相似度 */
+  function longestCommonSubstring(a: string, b: string): number {
+    if (!a || !b) return 0
+    let best = 0
+    let prev = new Array<number>(b.length + 1).fill(0)
+    for (let i = 1; i <= a.length; i++) {
+      const cur = new Array<number>(b.length + 1).fill(0)
+      for (let j = 1; j <= b.length; j++) {
+        if (a[i - 1] === b[j - 1]) {
+          cur[j] = prev[j - 1] + 1
+          if (cur[j] > best) best = cur[j]
+        }
+      }
+      prev = cur
+    }
+    return best
   }
 
   const addRelevantSongs = (songs: NeteaseSong[]) => {
@@ -157,6 +187,9 @@ export async function searchSongsForWork(
 
   // ---- 路线 A：歌曲搜索（多个关键词）----
   const songQueries = [`${name} OST`, `${name} 原声`, name]
+  if (hasAlt) {
+    songQueries.push(`${alt} OST`, `${alt} 原声`, alt)
+  }
   for (const q of songQueries) {
     try {
       addRelevantSongs(await searchSongs(q, limit))
@@ -171,6 +204,20 @@ export async function searchSongsForWork(
     const albums = await searchAlbums(name, 8)
     // 只取与作品名相关的专辑（避免搜到同名无关专辑）
     const relevant = albums.filter((a) => isRelevantAlbum(a.name, name))
+
+    // 用原名再搜一轮专辑（应对译名差异）
+    if (hasAlt) {
+      try {
+        const altAlbums = await searchAlbums(alt, 8)
+        for (const a of altAlbums) {
+          if (isRelevantAlbum(a.name, alt) && !relevant.some((r) => r.id === a.id)) {
+            relevant.push(a)
+          }
+        }
+      } catch {
+        // 原名搜索失败不影响整体
+      }
+    }
 
     for (const album of relevant.slice(0, 5)) {
       try {
@@ -207,16 +254,66 @@ interface NeteaseAlbum {
 }
 
 /**
+ * 常用繁体 → 简体映射表。
+ *
+ * 用途：Bangumi 用简体中文（少女歌剧），网易云多用日文汉字/繁体
+ * （少女☆歌劇），直接比较会全部失配，导致搜索结果被误过滤。
+ *
+ * 只收录标题中高频出现的字，避免引入体积较大的转换库。
+ */
+const T2S_MAP: Record<string, string> = {
+  劇: '剧', 歌: '歌', 聲: '声', 樂: '乐', 點: '点', 擊: '击',
+  發: '发', 動: '动', 機: '机', 關: '关', 於: '于', 與: '与',
+  為: '为', 這: '这', 個: '个', 來: '来', 時: '时', 說: '说',
+  對: '对', 開: '开', 會: '会', 後: '后', 沒: '没', 樣: '样',
+  麼: '么', 學: '学', 園: '园', 國: '国', 語: '语', 話: '话',
+  電: '电', 視: '视', 畫: '画', 漫: '漫', 戰: '战', 記: '记',
+  憶: '忆', 夢: '梦', 想: '想', 戀: '恋', 愛: '爱', 情: '情',
+  熱: '热', 風: '风', 雲: '云', 雨: '雨', 雪: '雪', 花: '花',
+  鳥: '鸟', 魚: '鱼', 龍: '龙', 鳳: '凤', 魔: '魔', 法: '法',
+  師: '师', 劍: '剑', 騎: '骑', 士: '士', 勇: '勇', 者: '者',
+  傳: '传', 統: '统', 結: '结', 束: '束', 終: '终', 極: '极',
+  限: '限', 界: '界', 世: '世', 紀: '纪', 元: '元', 復: '复',
+  興: '兴', 甦: '苏', 醒: '醒', 覺: '觉', 眠: '眠', 闇: '暗',
+  黒: '黑', 白: '白', 赤: '赤', 青: '青', 黃: '黄', 綠: '绿',
+  紫: '紫', 銀: '银', 鋼: '钢', 鉄: '铁', 空: '空', 海: '海',
+  星: '星', 月: '月', 陽: '阳', 光: '光', 影: '影', 響: '响',
+  音: '音', 曲: '曲', 詩: '诗', 詞: '词', 繪: '绘', 圖: '图',
+  書: '书', 館: '馆', 室: '室', 家: '家', 族: '族', 兄: '兄',
+  弟: '弟', 姉: '姐', 妹: '妹', 娘: '娘', 子: '子', 供: '供',
+  達: '达', 們: '们', 誰: '谁', 何: '何', 處: '处', 所: '所',
+  無: '无', 有: '有', 全: '全', 部: '部', 分: '分', 半: '半',
+  數: '数', 量: '量', 質: '质', 變: '变', 化: '化', 進: '进',
+  行: '行', 退: '退', 出: '出', 入: '入', 上: '上', 下: '下',
+  前: '前', 左: '左', 右: '右', 内: '内', 外: '外',
+}
+
+/** 繁体转简体（仅处理映射表内的字） */
+function toSimplified(s: string): string {
+  let out = ''
+  for (const ch of s) {
+    out += T2S_MAP[ch] ?? ch
+  }
+  return out
+}
+
+/** 归一化：繁转简 → 转小写 → 去符号空白 */
+function normalizeName(s: string): string {
+  return toSimplified(s)
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[^\p{L}\p{N}]/gu, '')
+}
+
+/**
  * 判断专辑名是否与作品名相关。
  *
  * 网易云专辑搜索会返回一些同名但无关的专辑，需要过滤。
- * 规则：专辑名包含作品名（忽略大小写与空格）即视为相关。
+ * 规则：专辑名包含作品名（繁简归一后）即视为相关。
  */
 function isRelevantAlbum(albumName: string, workName: string): boolean {
-  const norm = (s: string) =>
-    s.toLowerCase().replace(/\s+/g, '').replace(/[^\p{L}\p{N}]/gu, '')
-  const a = norm(albumName)
-  const w = norm(workName)
+  const a = normalizeName(albumName)
+  const w = normalizeName(workName)
   if (!a || !w) return false
   return a.includes(w)
 }
