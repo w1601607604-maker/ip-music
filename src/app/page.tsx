@@ -466,6 +466,11 @@ export default function Home() {
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-sm text-slate-200">
                             {s.name}
+                            {s.popularity >= 90 && (
+                              <span className="ml-1.5 rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] text-rose-300">
+                                热门
+                              </span>
+                            )}
                           </span>
                           <span className="mt-0.5 block truncate text-xs text-slate-500">
                             {s.artist}

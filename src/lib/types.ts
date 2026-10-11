@@ -92,6 +92,8 @@ export interface SongItem {
   artist: string
   album: string
   duration: number
+  /** 热度 0~100，用于展示与排序 */
+  popularity: number
 }
 
 /** B站视频条目 */

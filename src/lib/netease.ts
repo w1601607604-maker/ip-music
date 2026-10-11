@@ -32,9 +32,16 @@ export class NeteaseError extends Error {
 interface NeteaseSong {
   id: number
   name: string
+  /** 旧接口 /search/get/web 的字段 */
   artists?: { name: string }[]
   album?: { name: string }
   duration?: number
+  /** 新接口 /cloudsearch/pc 的字段 */
+  ar?: { name: string }[]
+  al?: { name: string }
+  dt?: number
+  /** 热度 0~100，仅 cloudsearch 提供 */
+  pop?: number
 }
 
 /** 搜索结果条目（给前端用） */
@@ -44,16 +51,20 @@ export interface NeteaseSongItem {
   artist: string
   album: string
   duration: number
+  /** 热度 0~100，用于排序；旧接口无此字段时为 0 */
+  popularity: number
 }
 
-/** 把网易云原始歌曲对象转成前端条目 */
+/** 把网易云原始歌曲对象转成前端条目（兼容两个接口的字段差异） */
 function toSongItem(s: NeteaseSong): NeteaseSongItem {
+  const artists = s.ar || s.artists || []
   return {
     id: s.id,
     name: s.name || '',
-    artist: (s.artists || []).map((a) => a.name).join(' / '),
-    album: s.album?.name || '',
-    duration: s.duration || 0,
+    artist: artists.map((a) => a.name).join(' / '),
+    album: s.al?.name || s.album?.name || '',
+    duration: s.dt || s.duration || 0,
+    popularity: typeof s.pop === 'number' ? s.pop : 0,
   }
 }
 
@@ -83,6 +94,7 @@ export async function searchSongsForWork(
   const queries = [`${name} OST`, `${name} 原声`, name]
   const seen = new Set<number>()
   const merged: NeteaseSongItem[] = []
+  let lastError: unknown = null
 
   for (const q of queries) {
     try {
@@ -92,12 +104,25 @@ export async function searchSongsForWork(
         seen.add(s.id)
         merged.push(toSongItem(s))
       }
-    } catch {
-      // 单个关键词失败不影响整体
+    } catch (e) {
+      // 记录失败原因；若最终一条都没拿到，把真实原因抛给用户
+      lastError = e
     }
     // 网易云相对宽松，但仍加小间隔
     await new Promise((r) => setTimeout(r, 120))
   }
+
+  // 一条都没有且确实出过错 → 抛出真实原因，不要伪装成"未找到"
+  if (merged.length === 0 && lastError) {
+    throw lastError instanceof NeteaseError
+      ? lastError
+      : new NeteaseError(
+          `网易云搜索失败：${lastError instanceof Error ? lastError.message : String(lastError)}`,
+        )
+  }
+
+  // 按热度排序：热门曲目靠前（pop 为 0 的旧接口结果排在后面）
+  merged.sort((a, b) => b.popularity - a.popularity)
 
   return merged
 }
@@ -125,10 +150,11 @@ export async function searchSongs(
     limit: String(limit),
   })
 
-  // 主接口 + 备用接口
+  // 主接口用 cloudsearch（含热度 pop 字段，便于按热度排序）
+  // 备用接口为旧的 search/get/web
   const endpoints = [
-    `${NETEASE}/api/search/get/web?${params}`,
     `${NETEASE}/api/cloudsearch/pc?${params}`,
+    `${NETEASE}/api/search/get/web?${params}`,
   ]
 
   let lastError: string | null = null
