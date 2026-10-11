@@ -260,11 +260,16 @@ function toMusicItem(r: any): MusicItem | null {
  *
  * 使用 /x/web-interface/search/all/v2 端点（而非 /search/type）。
  *
- * 原因：/search/type 对服务器/数据中心 IP 有严格风控，会稳定返回 412；
- * /all/v2 对同样的 IP 可正常返回，且无需 Cookie。
- * 参考：https://github.com/Panniantong/Agent-Reach/issues/180
+ * 端点选择说明（实测结论）：
+ *   两个搜索端点的风控策略不同，且**取决于请求走 IPv4 还是 IPv6**：
  *
- * 若 /all/v2 失败，回退到 /search/type（带 Cookie）作为兜底。
+ *   | 端点          | IPv4（住宅/本地） | IPv6（Cloudflare Workers） |
+ *   |---------------|------------------|---------------------------|
+ *   | /search/type  | 412 ❌           | 200 ✅                    |
+ *   | /all/v2       | 200 ✅           | 412 ❌                    |
+ *
+ *   因此不能固定用某一个，而是**两个都试**，谁成功用谁。
+ *   这样无论部署在什么网络环境都能工作。
  *
  * @param keyword 搜索关键词
  * @param page 页码
@@ -273,7 +278,19 @@ export async function searchMusic(
   keyword: string,
   page = 1,
 ): Promise<MusicItem[]> {
-  // ---- 主方案：/all/v2（无需 Cookie，对服务器 IP 友好）----
+  const errors: string[] = []
+
+  // ---- 方案 1：/search/type（带 Cookie）----
+  // 在 IPv6 环境（如 Cloudflare Workers）下通常可用
+  try {
+    const items = await searchMusicLegacy(keyword, page)
+    if (items.length > 0) return items
+  } catch (e) {
+    errors.push(e instanceof Error ? e.message : String(e))
+  }
+
+  // ---- 方案 2：/all/v2（无需 Cookie）----
+  // 在 IPv4 环境（如本地开发）下通常可用
   try {
     const params = new URLSearchParams({ keyword, page: String(page) })
     const res = await fetch(`${BILI_SEARCH_ALL}?${params}`, {
@@ -286,23 +303,28 @@ export async function searchMusic(
       const json = await res.json()
       if (json?.code === 0) {
         const videos = extractVideosFromAllV2(json)
-        const items = videos
+        return videos
           .map(toMusicItem)
           .filter((x): x is MusicItem => x !== null)
-        if (items.length > 0) return items
-        // 返回成功但无结果，直接返回空数组（不必回退）
-        return []
       }
+      errors.push(`/all/v2 返回 code=${json?.code}`)
+    } else {
+      errors.push(`/all/v2 HTTP ${res.status}`)
     }
-  } catch {
-    // 落入下方的回退方案
+  } catch (e) {
+    errors.push(e instanceof Error ? e.message : String(e))
   }
 
-  // ---- 回退方案：/search/type（带 Cookie）----
-  return searchMusicLegacy(keyword, page)
+  // 两个端点都失败：把真实原因抛出，便于排查
+  if (errors.length > 0) {
+    throw new BilibiliError(
+      `B站搜索失败（两个端点均不可用）：${[...new Set(errors)].join('；')}`,
+    )
+  }
+  return []
 }
 
-/** 回退方案：旧搜索端点（需要 Cookie，服务器 IP 可能被 412） */
+/** 方案 1：/search/type 端点（需要 Cookie，IPv6 环境下通常可用） */
 async function searchMusicLegacy(
   keyword: string,
   page = 1,
