@@ -42,6 +42,8 @@ interface NeteaseSong {
   dt?: number
   /** 热度 0~100，仅 cloudsearch 提供 */
   pop?: number
+  /** 付费类型：0=免费 1=VIP 4=购买专辑 8=低音质免费 */
+  fee?: number
 }
 
 /** 搜索结果条目（给前端用） */
@@ -53,6 +55,8 @@ export interface NeteaseSongItem {
   duration: number
   /** 热度 0~100，用于排序；旧接口无此字段时为 0 */
   popularity: number
+  /** 付费类型：0=免费 1=VIP 4=购买专辑 8=低音质免费 */
+  fee: number
 }
 
 /** 把网易云原始歌曲对象转成前端条目（兼容两个接口的字段差异） */
@@ -65,6 +69,7 @@ function toSongItem(s: NeteaseSong): NeteaseSongItem {
     album: s.al?.name || s.album?.name || '',
     duration: s.dt || s.duration || 0,
     popularity: typeof s.pop === 'number' ? s.pop : 0,
+    fee: typeof s.fee === 'number' ? s.fee : 0,
   }
 }
 

@@ -94,6 +94,8 @@ export interface SongItem {
   duration: number
   /** 热度 0~100，用于展示与排序 */
   popularity: number
+  /** 付费类型：0=免费 1=VIP 4=购买专辑 8=低音质免费 */
+  fee: number
 }
 
 /** B站视频条目 */

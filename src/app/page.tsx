@@ -471,6 +471,11 @@ export default function Home() {
                                 热门
                               </span>
                             )}
+                            {s.fee === 1 && (
+                              <span className="ml-1.5 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
+                                VIP
+                              </span>
+                            )}
                           </span>
                           <span className="mt-0.5 block truncate text-xs text-slate-500">
                             {s.artist}
@@ -515,7 +520,38 @@ export default function Home() {
                   </button>
                 </div>
 
-                {/* 播放器 */}
+                {/* 网易云官方外链播放器（主播放方式） */}
+                <div className="mb-5 rounded-lg border border-slate-800 bg-slate-950/60 p-4">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-medium text-slate-300">
+                      网易云播放器
+                    </h3>
+                    <a
+                      href={`https://music.163.com/#/song?id=${activeSong.id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex-shrink-0 text-xs text-bgm hover:underline"
+                    >
+                      在网易云打开 →
+                    </a>
+                  </div>
+
+                  {activeSong.fee === 1 ? (
+                    <p className="py-3 text-center text-sm text-amber-300/80">
+                      这首歌为 VIP 专属，外链播放器可能无法播放，可点击上方链接前往网易云
+                    </p>
+                  ) : null}
+
+                  <iframe
+                    src={`https://music.163.com/outchain/player?type=2&id=${activeSong.id}&auto=0&height=66`}
+                    className="w-full rounded"
+                    style={{ height: '86px', border: 'none' }}
+                    frameBorder="0"
+                    title={`网易云播放器 - ${activeSong.name}`}
+                  />
+                </div>
+
+                {/* B站播放器（可选，搜到才显示） */}
                 {playing && (
                   <div className="mb-5">
                     <div className="mb-2 flex items-center justify-between gap-3">
@@ -574,6 +610,9 @@ export default function Home() {
                 {/* B站播放源 */}
                 <h3 className="mb-3 text-sm font-medium text-slate-300">
                   B站播放源
+                  <span className="ml-2 font-normal text-slate-500">
+                    可选 · 用于完整收听
+                  </span>
                   {music.length > 0 && (
                     <span className="ml-2 font-normal text-slate-500">
                       {music.length} 个结果
@@ -586,9 +625,10 @@ export default function Home() {
                     正在搜索 B站播放源…
                   </p>
                 ) : musicError ? (
-                  <div className="rounded-lg bg-red-950/50 px-4 py-3 text-sm text-red-300">
-                    <p className="whitespace-pre-wrap font-mono text-xs leading-relaxed">
-                      {musicError}
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-400">
+                    <p>
+                      B站暂时无法搜索（服务器 IP 被风控）。
+                      上方网易云播放器仍可正常收听。
                     </p>
                     <a
                       href={`https://search.bilibili.com/all?keyword=${encodeURIComponent(
@@ -596,7 +636,7 @@ export default function Home() {
                       )}`}
                       target="_blank"
                       rel="noreferrer"
-                      className="mt-2 inline-block rounded border border-red-700 px-3 py-1 text-xs text-red-200 transition hover:bg-red-900/40"
+                      className="mt-2 inline-block rounded border border-slate-700 px-3 py-1 text-xs text-slate-300 transition hover:bg-slate-800"
                     >
                       在 B站手动搜索 →
                     </a>
@@ -661,10 +701,10 @@ export default function Home() {
 
       <footer className="mt-12 border-t border-slate-800/60 pt-6 text-center text-xs text-slate-500">
         <p>
-          数据来源：Bangumi（收藏）· 网易云（曲目与歌词）· B站（官方播放器）
+          数据来源：Bangumi（收藏）· 网易云（曲目/歌词/播放器）· B站（可选播放源）
         </p>
         <p className="mt-1">
-          本站不存储任何音频，音乐播放由 B站官方播放器提供
+          本站不存储任何音频，播放由网易云 / B站官方播放器提供
         </p>
       </footer>
     </main>
