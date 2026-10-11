@@ -53,6 +53,7 @@ export async function GET() {
     name: string
     status?: number
     apiCode?: number | null
+    bizError?: string | null
     itemCount?: number | null
     error?: string
     elapsedMs: number
@@ -71,6 +72,7 @@ export async function GET() {
 
       let apiCode: number | null = null
       let itemCount: number | null = null
+      let bizError: string | null = null
 
       if (res.headers.get('content-type')?.includes('json')) {
         try {
@@ -78,6 +80,10 @@ export async function GET() {
           apiCode = j?.code ?? null
           // 网易云搜索：统计歌曲数
           if (j?.result?.songs) itemCount = j.result.songs.length
+          // 网易云业务错误（如 405 操作频繁）
+          if (typeof j?.code === 'number' && j.code !== 200 && j.code !== 0) {
+            bizError = j?.msg || j?.message || `业务错误 code=${j.code}`
+          }
           // B站 all/v2：统计视频数
           if (Array.isArray(j?.data?.result)) {
             for (const g of j.data.result) {
@@ -96,13 +102,18 @@ export async function GET() {
         }
       }
 
+      // 关键：业务 code 也必须正常，否则 HTTP 200 也可能是失败
+      const bizOk =
+        apiCode === null || apiCode === 0 || apiCode === 200
+
       results.push({
         name,
         status: res.status,
         apiCode,
         itemCount,
+        bizError,
         elapsedMs: Date.now() - started,
-        ok: res.ok && (apiCode === 0 || apiCode === 200 || apiCode === null),
+        ok: res.ok && bizOk,
       })
     } catch (e) {
       results.push({

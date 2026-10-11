@@ -18,6 +18,8 @@ const HEADERS: Record<string, string> = {
   Referer: 'https://music.163.com/',
   Accept: 'application/json, text/plain, */*',
   'Accept-Language': 'zh-CN,zh;q=0.9,ja;q=0.8,en;q=0.7',
+  // 匿名访客 Cookie：降低被判定为爬虫的概率（无需登录）
+  Cookie: 'os=pc; appver=2.9.7; NMTID=00Oxxx; _ntes_nuid=00000000000000000000000000000000',
 }
 
 export class NeteaseError extends Error {
@@ -100,7 +102,18 @@ export async function searchSongsForWork(
   return merged
 }
 
-/** 搜索网易云歌曲，返回候选列表 */
+/**
+ * 搜索网易云歌曲，返回候选列表。
+ *
+ * ⚠️ 限流说明（实测）：
+ *   网易云搜索接口对无 Cookie 的请求限流严格，数据中心 IP 尤其容易
+ *   触发 code=405「操作频繁，请稍候再试」。
+ *
+ *   应对：
+ *     1. 带一组浏览器 Cookie（匿名即可，无需登录）
+ *     2. 遇 405 时退避重试
+ *     3. 主接口失败则换 /api/cloudsearch/pc 备用接口
+ */
 export async function searchSongs(
   keyword: string,
   limit = 10,
@@ -112,19 +125,54 @@ export async function searchSongs(
     limit: String(limit),
   })
 
-  const res = await fetch(`${NETEASE}/api/search/get/web?${params}`, {
-    headers: HEADERS,
-    cache: 'no-store',
-    signal: AbortSignal.timeout(12000),
-  })
+  // 主接口 + 备用接口
+  const endpoints = [
+    `${NETEASE}/api/search/get/web?${params}`,
+    `${NETEASE}/api/cloudsearch/pc?${params}`,
+  ]
 
-  if (!res.ok) {
-    throw new NeteaseError(`网易云搜索失败（HTTP ${res.status}）`)
+  let lastError: string | null = null
+
+  for (const url of endpoints) {
+    // 每个接口最多试 2 次（应对偶发 405）
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(url, {
+          headers: HEADERS,
+          cache: 'no-store',
+          signal: AbortSignal.timeout(12000),
+        })
+
+        if (!res.ok) {
+          lastError = `HTTP ${res.status}`
+          break // 换下一个接口
+        }
+
+        const json = await res.json()
+
+        // 405 = 操作频繁，退避后重试
+        if (json?.code === 405) {
+          lastError = '操作频繁（405）'
+          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)))
+          continue
+        }
+
+        const songs: NeteaseSong[] = json?.result?.songs || []
+        if (songs.length > 0) return songs
+
+        // 返回成功但无结果，不必重试
+        if (json?.code === 200) return []
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e)
+        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)))
+      }
+    }
   }
 
-  const json = await res.json()
-  const songs: NeteaseSong[] = json?.result?.songs || []
-  return songs
+  // 全部失败：抛出真实原因（而不是静默返回空，导致前端显示"未找到"）
+  throw new NeteaseError(
+    `网易云搜索失败${lastError ? `：${lastError}` : ''}，请稍后重试`,
+  )
 }
 
 /** 解析 LRC 文本为 [{time, text}] */
