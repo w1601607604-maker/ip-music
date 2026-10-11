@@ -81,10 +81,14 @@ function toSongItem(s: NeteaseSong): NeteaseSongItem {
  * 相比直接搜 B站，网易云返回的是**真实曲目元数据**（曲名/歌手/专辑），
  * 而不是视频标题，信息更准确，也不受 B站风控影响。
  *
- * 会用多个关键词组合搜索并合并去重：
- *   1. 作品名 + OST
- *   2. 作品名 + 原声
- *   3. 作品名（兜底）
+ * 搜索策略（两路合并，覆盖更全）：
+ *   路线 A —— 歌曲搜索：直接搜曲名，能拿到热门单曲
+ *   路线 B —— 专辑搜索：搜 OST 专辑，再拉取专辑内全部曲目
+ *
+ * 为什么需要路线 B：
+ *   只搜歌曲时，网易云按曲名匹配，会漏掉大量 OST 曲目
+ *   （例如 CLANNAD 只搜歌曲得 74 首，但 OST 专辑本身就有 56 首，
+ *   加上其他专辑共 200+ 首）。专辑路线能显著提升覆盖度。
  *
  * @param workName 作品名（通常是中文名）
  * @param limit 每个关键词取多少条
@@ -96,25 +100,88 @@ export async function searchSongsForWork(
   const name = workName.trim()
   if (!name) return []
 
-  const queries = [`${name} OST`, `${name} 原声`, name]
   const seen = new Set<number>()
   const merged: NeteaseSongItem[] = []
   let lastError: unknown = null
 
-  for (const q of queries) {
+  const addSongs = (songs: NeteaseSong[]) => {
+    for (const s of songs) {
+      if (!s?.id || seen.has(s.id)) continue
+      seen.add(s.id)
+      merged.push(toSongItem(s))
+    }
+  }
+
+  /**
+   * 判断曲目是否与作品相关。
+   *
+   * 背景：网易云按关键词模糊匹配，可能返回无关曲目
+   * （搜 CLANNAD 会混入《花千骨》原声带、《Outer Wilds》OST）。
+   *
+   * 但不能一律用「名称包含」来过滤 —— 中文作品名对应的曲目/专辑
+   * 往往是日文或英文（命运石之门 → STEINS;GATE），会被误杀。
+   *
+   * 折中策略：
+   *   - 专辑名包含作品名 → 相关
+   *   - 曲名包含作品名 → 相关
+   *   - 作品名是纯 ASCII（如 CLANNAD）→ 启用严格过滤，
+   *     因为这类名称在日文/英文曲目里通常也会出现
+   *   - 作品名含中文 → 放宽（无法据此判断，交给网易云的相关度排序）
+   */
+  const isRelevant = (s: NeteaseSong): boolean => {
+    const norm = (x: string) =>
+      x.toLowerCase().replace(/\s+/g, '').replace(/[^\p{L}\p{N}]/gu, '')
+    const w = norm(name)
+    if (!w) return true
+
+    const songName = norm(s.name || '')
+    const albumName = norm(s.al?.name || s.album?.name || '')
+    if (songName.includes(w) || albumName.includes(w)) return true
+
+    // 作品名含中文 → 无法用名称判断相关性，放行
+    if (/[\u4e00-\u9fff]/.test(name)) return true
+
+    // 纯 ASCII 作品名 → 启用严格过滤
+    return false
+  }
+
+  const addRelevantSongs = (songs: NeteaseSong[]) => {
+    for (const s of songs) {
+      if (!s?.id || seen.has(s.id)) continue
+      // 专辑路线来的曲目已确认相关，歌曲路线需要过滤
+      if (!isRelevant(s)) continue
+      seen.add(s.id)
+      merged.push(toSongItem(s))
+    }
+  }
+
+  // ---- 路线 A：歌曲搜索（多个关键词）----
+  const songQueries = [`${name} OST`, `${name} 原声`, name]
+  for (const q of songQueries) {
     try {
-      const songs = await searchSongs(q, limit)
-      for (const s of songs) {
-        if (!s?.id || seen.has(s.id)) continue
-        seen.add(s.id)
-        merged.push(toSongItem(s))
-      }
+      addRelevantSongs(await searchSongs(q, limit))
     } catch (e) {
-      // 记录失败原因；若最终一条都没拿到，把真实原因抛给用户
       lastError = e
     }
-    // 网易云相对宽松，但仍加小间隔
     await new Promise((r) => setTimeout(r, 120))
+  }
+
+  // ---- 路线 B：专辑搜索 → 拉取专辑曲目 ----
+  try {
+    const albums = await searchAlbums(name, 8)
+    // 只取与作品名相关的专辑（避免搜到同名无关专辑）
+    const relevant = albums.filter((a) => isRelevantAlbum(a.name, name))
+
+    for (const album of relevant.slice(0, 5)) {
+      try {
+        addSongs(await fetchAlbumSongs(album.id))
+      } catch {
+        // 单个专辑失败不影响整体
+      }
+      await new Promise((r) => setTimeout(r, 120))
+    }
+  } catch (e) {
+    lastError = lastError ?? e
   }
 
   // 一条都没有且确实出过错 → 抛出真实原因，不要伪装成"未找到"
@@ -130,6 +197,85 @@ export async function searchSongsForWork(
   merged.sort((a, b) => b.popularity - a.popularity)
 
   return merged
+}
+
+/** 网易云专辑条目 */
+interface NeteaseAlbum {
+  id: number
+  name: string
+  size?: number
+}
+
+/**
+ * 判断专辑名是否与作品名相关。
+ *
+ * 网易云专辑搜索会返回一些同名但无关的专辑，需要过滤。
+ * 规则：专辑名包含作品名（忽略大小写与空格）即视为相关。
+ */
+function isRelevantAlbum(albumName: string, workName: string): boolean {
+  const norm = (s: string) =>
+    s.toLowerCase().replace(/\s+/g, '').replace(/[^\p{L}\p{N}]/gu, '')
+  const a = norm(albumName)
+  const w = norm(workName)
+  if (!a || !w) return false
+  return a.includes(w)
+}
+
+/**
+ * 搜索网易云专辑（type=10）。
+ *
+ * 用于路线 B：先找到 OST 专辑，再拉取专辑内全部曲目，
+ * 这样能覆盖到只搜曲名时漏掉的曲目。
+ */
+export async function searchAlbums(
+  keyword: string,
+  limit = 8,
+): Promise<NeteaseAlbum[]> {
+  const params = new URLSearchParams({
+    s: keyword,
+    type: '10',
+    offset: '0',
+    limit: String(limit),
+  })
+
+  const res = await fetch(`${NETEASE}/api/cloudsearch/pc?${params}`, {
+    headers: HEADERS,
+    cache: 'no-store',
+    signal: AbortSignal.timeout(12000),
+  })
+
+  if (!res.ok) {
+    throw new NeteaseError(`网易云专辑搜索失败（HTTP ${res.status}）`)
+  }
+
+  const json = await res.json()
+  if (json?.code === 405) {
+    throw new NeteaseError('操作频繁（405）')
+  }
+
+  const albums: NeteaseAlbum[] = json?.result?.albums || []
+  return albums
+}
+
+/**
+ * 获取专辑内的全部曲目。
+ *
+ * 注意：必须用 /api/v1/album/{id}，旧版 /api/album/{id} 返回空数组。
+ */
+export async function fetchAlbumSongs(albumId: number): Promise<NeteaseSong[]> {
+  const res = await fetch(`${NETEASE}/api/v1/album/${albumId}`, {
+    headers: HEADERS,
+    cache: 'no-store',
+    signal: AbortSignal.timeout(12000),
+  })
+
+  if (!res.ok) {
+    throw new NeteaseError(`网易云专辑详情失败（HTTP ${res.status}）`)
+  }
+
+  const json = await res.json()
+  const songs: NeteaseSong[] = json?.songs || []
+  return songs
 }
 
 /**
