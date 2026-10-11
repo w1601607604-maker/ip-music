@@ -6,7 +6,12 @@
  * 注意：Bangumi 强制要求 User-Agent 请求头，否则可能被拒绝。
  */
 
-import type { Paged, UserCollection, WorkItem } from './types'
+import type {
+  Paged,
+  UserCollection,
+  WorkItem,
+  SubjectImages,
+} from './types'
 
 /** Bangumi API 基址，可通过环境变量覆盖（便于测试或自建镜像） */
 const BANGUMI_API = process.env.BANGUMI_API_BASE || 'https://api.bgm.tv'
@@ -135,5 +140,81 @@ export function toWorkItem(c: UserCollection): WorkItem {
     subjectType: c.subject_type,
     collectionType: c.type,
     rate: c.rate,
+  }
+}
+
+/** Bangumi 关联条目（/v0/subjects/{id}/subjects 的返回项） */
+export interface RelatedSubject {
+  id: number
+  type: number
+  name: string
+  name_cn?: string
+  /** 关联关系，如「原声集」「片头曲」等 */
+  relation?: string
+  images?: SubjectImages
+}
+
+/**
+ * 拉取作品的关联条目。
+ *
+ * 用途：找到作品的关联音乐条目（subject_type=3），
+ * 用这些专辑名去网易云搜索，能覆盖到中文译名搜不到的内容。
+ *
+ * 例如「少女歌剧 黄金国」这类译名特殊的游戏，直接搜作品名
+ * 在网易云几乎搜不到，但通过关联音乐条目就能找到对应 OST。
+ *
+ * @param subjectId Bangumi 条目 id
+ */
+export async function fetchRelatedSubjects(
+  subjectId: number,
+): Promise<RelatedSubject[]> {
+  const res = await fetch(`${BANGUMI_API}/v0/subjects/${subjectId}/subjects`, {
+    headers: {
+      'User-Agent': USER_AGENT,
+      Accept: 'application/json',
+    },
+    signal: AbortSignal.timeout(12000),
+  })
+
+  if (!res.ok) {
+    // 关联条目属于增强信息，失败不应阻断主流程
+    throw new BangumiError(
+      `获取关联条目失败（HTTP ${res.status}）`,
+      res.status,
+    )
+  }
+
+  const json = await res.json()
+  // 接口可能返回数组，也可能包在 data 字段里
+  const list = Array.isArray(json) ? json : (json?.data ?? [])
+  return Array.isArray(list) ? list : []
+}
+
+/**
+ * 获取作品的关联音乐条目名称。
+ *
+ * 只返回 subject_type=3（音乐）的条目名，用于补充网易云搜索关键词。
+ * 最多返回若干个，避免请求过多。
+ */
+export async function fetchRelatedMusicNames(
+  subjectId: number,
+  max = 6,
+): Promise<string[]> {
+  try {
+    const related = await fetchRelatedSubjects(subjectId)
+    const names: string[] = []
+
+    for (const r of related) {
+      if (r?.type !== 3) continue // 3 = 音乐
+      // 优先原名（专辑名通常是日文/英文），其次中文名
+      const n = (r.name || '').trim() || (r.name_cn || '').trim()
+      if (n && !names.includes(n)) names.push(n)
+      if (names.length >= max) break
+    }
+
+    return names
+  } catch {
+    // 关联条目拿不到时静默降级，不影响主流程
+    return []
   }
 }

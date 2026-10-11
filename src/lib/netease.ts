@@ -97,6 +97,7 @@ export async function searchSongsForWork(
   workName: string,
   limit = 30,
   altName?: string,
+  relatedNames: string[] = [],
 ): Promise<NeteaseSongItem[]> {
   const name = workName.trim()
   if (!name) return []
@@ -147,6 +148,12 @@ export async function searchSongsForWork(
     // 原名匹配（命运石之门 → STEINS;GATE）
     if (wa && (songName.includes(wa) || albumName.includes(wa))) return true
 
+    // 关联音乐条目名匹配（Bangumi 关联的 OST 专辑名）
+    for (const rn of relatedNames) {
+      const wr = normalizeName(rn)
+      if (wr && (songName.includes(wr) || albumName.includes(wr))) return true
+    }
+
     // 3：中文作品名 —— 用最长公共子串应对译名差异
     //    （少女歌剧 vs 少女☆歌劇 レヴュースタァライト）
     if (/[\u4e00-\u9fff]/.test(name) && w.length >= 3) {
@@ -190,6 +197,11 @@ export async function searchSongsForWork(
   if (hasAlt) {
     songQueries.push(`${alt} OST`, `${alt} 原声`, alt)
   }
+  // Bangumi 关联音乐条目名（OST 专辑名），能覆盖译名搜不到的情况
+  for (const rn of relatedNames.slice(0, 4)) {
+    const r = rn.trim()
+    if (r && r !== name && r !== alt) songQueries.push(r)
+  }
   for (const q of songQueries) {
     try {
       addRelevantSongs(await searchSongs(q, limit))
@@ -219,6 +231,26 @@ export async function searchSongsForWork(
       }
     }
 
+    // 用 Bangumi 关联音乐条目名搜专辑（覆盖译名差异）
+    for (const rn of relatedNames.slice(0, 4)) {
+      const r = rn.trim()
+      if (!r || r === name || r === alt) continue
+      try {
+        const relAlbums = await searchAlbums(r, 6)
+        for (const a of relAlbums) {
+          if (
+            isRelevantAlbum(a.name, r) &&
+            !relevant.some((x) => x.id === a.id)
+          ) {
+            relevant.push(a)
+          }
+        }
+      } catch {
+        // 单个关键词失败不影响整体
+      }
+      await new Promise((res) => setTimeout(res, 120))
+    }
+
     for (const album of relevant.slice(0, 5)) {
       try {
         addSongs(await fetchAlbumSongs(album.id))
@@ -240,8 +272,20 @@ export async function searchSongsForWork(
         )
   }
 
-  // 按热度排序：热门曲目靠前（pop 为 0 的旧接口结果排在后面）
-  merged.sort((a, b) => b.popularity - a.popularity)
+  // 排序：热度优先，热度相同时按「可播放性 + 曲名长度」细分
+  //
+  // 说明：网易云的 pop 值大量集中在 100，仅按 pop 排序时
+  // 同分曲目的顺序取决于搜索返回顺序，看起来像"没排序"。
+  // 因此加入次级排序键：
+  //   1. 可免费播放的优先（fee=1 为 VIP 专属，排后面）
+  //   2. 曲名较短的优先（通常是原曲，而非「XX Ver.」「XX Remix」）
+  merged.sort((a, b) => {
+    if (b.popularity !== a.popularity) return b.popularity - a.popularity
+    const aVip = a.fee === 1 ? 1 : 0
+    const bVip = b.fee === 1 ? 1 : 0
+    if (aVip !== bVip) return aVip - bVip
+    return a.name.length - b.name.length
+  })
 
   return merged
 }
