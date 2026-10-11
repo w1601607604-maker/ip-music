@@ -536,12 +536,6 @@ export default function Home() {
                     </a>
                   </div>
 
-                  {activeSong.fee === 1 ? (
-                    <p className="py-3 text-center text-sm text-amber-300/80">
-                      这首歌为 VIP 专属，外链播放器可能无法播放，可点击上方链接前往网易云
-                    </p>
-                  ) : null}
-
                   <iframe
                     src={`https://music.163.com/outchain/player?type=2&id=${activeSong.id}&auto=0&height=66`}
                     className="w-full rounded"
@@ -549,6 +543,15 @@ export default function Home() {
                     frameBorder="0"
                     title={`网易云播放器 - ${activeSong.name}`}
                   />
+
+                  {activeSong.fee === 1 && (
+                    <p className="mt-2 text-xs text-amber-300/80">
+                      ⚠️ 这首歌为 VIP 专属，网易云播放器可能无法出声
+                      {music.length > 0
+                        ? '，请使用下方 B站播放源收听'
+                        : '，可点击右上角前往网易云'}
+                    </p>
+                  )}
                 </div>
 
                 {/* B站播放器（可选，搜到才显示） */}
@@ -611,7 +614,9 @@ export default function Home() {
                 <h3 className="mb-3 text-sm font-medium text-slate-300">
                   B站播放源
                   <span className="ml-2 font-normal text-slate-500">
-                    可选 · 用于完整收听
+                    {activeSong.fee === 1
+                      ? '推荐 · 网易云无法播放这首歌'
+                      : '可选 · 用于完整收听'}
                   </span>
                   {music.length > 0 && (
                     <span className="ml-2 font-normal text-slate-500">
