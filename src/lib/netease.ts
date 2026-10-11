@@ -136,29 +136,32 @@ export async function searchSongsForWork(
    *   - 作品名含中文 → 放宽（无法据此判断，交给网易云的相关度排序）
    */
   const isRelevant = (s: NeteaseSong): boolean => {
-    const w = normalizeName(name)
-    const wa = hasAlt ? normalizeName(alt) : ''
-    if (!w && !wa) return true
-
     const songName = normalizeName(s.name || '')
     const albumName = normalizeName(s.al?.name || s.album?.name || '')
+    if (!songName && !albumName) return false
 
-    // 1 & 2：名称直接包含（繁简已归一）
-    if (w && (songName.includes(w) || albumName.includes(w))) return true
-    // 原名匹配（命运石之门 → STEINS;GATE）
-    if (wa && (songName.includes(wa) || albumName.includes(wa))) return true
-
-    // 关联音乐条目名匹配（Bangumi 关联的 OST 专辑名）
-    for (const rn of relatedNames) {
-      const wr = normalizeName(rn)
-      if (wr && (songName.includes(wr) || albumName.includes(wr))) return true
+    // 收集所有可用于匹配的名称变体
+    const variants: string[] = []
+    for (const raw of [name, alt, ...relatedNames]) {
+      const v = normalizeName(raw)
+      if (v) variants.push(v)
+      // 去掉副标题再试一次
+      // 例：时钟机关的Ley-line-朝雾中飘零之花- → 时钟机关的leyline
+      const base = normalizeName(stripSubtitle(raw))
+      if (base && base !== v) variants.push(base)
     }
 
-    // 3：中文作品名 —— 用最长公共子串应对译名差异
-    //    （少女歌剧 vs 少女☆歌劇 レヴュースタァライト）
-    if (/[\u4e00-\u9fff]/.test(name) && w.length >= 3) {
-      const lcs = longestCommonSubstring(w, albumName)
-      if (lcs >= Math.ceil(w.length * 0.6)) return true
+    if (variants.length === 0) return true
+
+    for (const v of variants) {
+      // 1. 名称直接包含
+      if (songName.includes(v) || albumName.includes(v)) return true
+
+      // 2. 最长公共子串 —— 应对译名/假名差异
+      //    阈值随名称长度自适应：长名要求更高，短名放宽
+      const need = v.length <= 4 ? v.length : Math.max(3, Math.ceil(v.length * 0.5))
+      if (longestCommonSubstring(v, albumName) >= need) return true
+      if (longestCommonSubstring(v, songName) >= need) return true
     }
 
     return false
@@ -193,9 +196,16 @@ export async function searchSongsForWork(
   }
 
   // ---- 路线 A：歌曲搜索（多个关键词）----
+  const baseName = stripSubtitle(name)
   const songQueries = [`${name} OST`, `${name} 原声`, name]
+  // 去掉副标题的主标题（系列作常见：时钟机关的Ley-line-朝雾中飘零之花-）
+  if (baseName && baseName !== name) {
+    songQueries.push(`${baseName} OST`, baseName)
+  }
   if (hasAlt) {
     songQueries.push(`${alt} OST`, `${alt} 原声`, alt)
+    const baseAlt = stripSubtitle(alt)
+    if (baseAlt && baseAlt !== alt) songQueries.push(baseAlt)
   }
   // Bangumi 关联音乐条目名（OST 专辑名），能覆盖译名搜不到的情况
   for (const rn of relatedNames.slice(0, 4)) {
@@ -216,6 +226,23 @@ export async function searchSongsForWork(
     const albums = await searchAlbums(name, 8)
     // 只取与作品名相关的专辑（避免搜到同名无关专辑）
     const relevant = albums.filter((a) => isRelevantAlbum(a.name, name))
+
+    // 用去副标题的主标题搜专辑（系列作常见）
+    if (baseName && baseName !== name) {
+      try {
+        const baseAlbums = await searchAlbums(baseName, 6)
+        for (const a of baseAlbums) {
+          if (
+            isRelevantAlbum(a.name, baseName) &&
+            !relevant.some((x) => x.id === a.id)
+          ) {
+            relevant.push(a)
+          }
+        }
+      } catch {
+        // 忽略
+      }
+    }
 
     // 用原名再搜一轮专辑（应对译名差异）
     if (hasAlt) {
@@ -295,6 +322,27 @@ interface NeteaseAlbum {
   id: number
   name: string
   size?: number
+}
+
+
+/**
+ * 去掉名称中的副标题。
+ *
+ * Bangumi 的条目名常带副标题，例如：
+ *   时钟机关的Ley-line-朝雾中飘零之花-
+ *   剧场版 空之境界 第三章 痛觉残留
+ * 而网易云的专辑名只含主标题（時計仕掛けのレイライン）。
+ * 因此匹配前先剥离副标题，提高命中率。
+ */
+function stripSubtitle(s: string): string {
+  let out = s.trim()
+  // 去掉「剧场版」「TV动画」等前缀
+  out = out.replace(/^(剧场版|劇場版|TV动画|TVアニメ|动画|アニメ|映画)\s*/i, '')
+  // 去掉破折号/冒号后的副标题
+  out = out.split(/[-–—:：~～]/)[0]
+  // 去掉「第X章」「第X季」等章节标记
+  out = out.replace(/第[一二三四五六七八九十\d]+[章季部篇话]/g, '')
+  return out.trim()
 }
 
 /**
