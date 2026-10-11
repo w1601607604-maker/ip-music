@@ -31,20 +31,91 @@ interface NeteaseSong {
   id: number
   name: string
   artists?: { name: string }[]
+  album?: { name: string }
+  duration?: number
+}
+
+/** 搜索结果条目（给前端用） */
+export interface NeteaseSongItem {
+  id: number
+  name: string
+  artist: string
+  album: string
+  duration: number
+}
+
+/** 把网易云原始歌曲对象转成前端条目 */
+function toSongItem(s: NeteaseSong): NeteaseSongItem {
+  return {
+    id: s.id,
+    name: s.name || '',
+    artist: (s.artists || []).map((a) => a.name).join(' / '),
+    album: s.album?.name || '',
+    duration: s.duration || 0,
+  }
+}
+
+/**
+ * 按作品名搜索网易云歌曲列表。
+ *
+ * 这是新的主链路第一步：作品名 → 网易云曲目列表。
+ *
+ * 相比直接搜 B站，网易云返回的是**真实曲目元数据**（曲名/歌手/专辑），
+ * 而不是视频标题，信息更准确，也不受 B站风控影响。
+ *
+ * 会用多个关键词组合搜索并合并去重：
+ *   1. 作品名 + OST
+ *   2. 作品名 + 原声
+ *   3. 作品名（兜底）
+ *
+ * @param workName 作品名（通常是中文名）
+ * @param limit 每个关键词取多少条
+ */
+export async function searchSongsForWork(
+  workName: string,
+  limit = 30,
+): Promise<NeteaseSongItem[]> {
+  const name = workName.trim()
+  if (!name) return []
+
+  const queries = [`${name} OST`, `${name} 原声`, name]
+  const seen = new Set<number>()
+  const merged: NeteaseSongItem[] = []
+
+  for (const q of queries) {
+    try {
+      const songs = await searchSongs(q, limit)
+      for (const s of songs) {
+        if (!s?.id || seen.has(s.id)) continue
+        seen.add(s.id)
+        merged.push(toSongItem(s))
+      }
+    } catch {
+      // 单个关键词失败不影响整体
+    }
+    // 网易云相对宽松，但仍加小间隔
+    await new Promise((r) => setTimeout(r, 120))
+  }
+
+  return merged
 }
 
 /** 搜索网易云歌曲，返回候选列表 */
-export async function searchSongs(keyword: string): Promise<NeteaseSong[]> {
+export async function searchSongs(
+  keyword: string,
+  limit = 10,
+): Promise<NeteaseSong[]> {
   const params = new URLSearchParams({
     s: keyword,
     type: '1',
     offset: '0',
-    limit: '10',
+    limit: String(limit),
   })
 
   const res = await fetch(`${NETEASE}/api/search/get/web?${params}`, {
     headers: HEADERS,
     cache: 'no-store',
+    signal: AbortSignal.timeout(12000),
   })
 
   if (!res.ok) {
@@ -146,6 +217,46 @@ export async function fetchLyricById(songId: number): Promise<{
   return {
     lrc: json?.lrc?.lyric || '',
     tlyric: json?.tlyric?.lyric || '',
+  }
+}
+
+/**
+ * 主入口（新链路）：直接用网易云歌曲 id 获取歌词。
+ *
+ * 前端已从曲目列表拿到 id，因此无需再搜索匹配，准确率 100%。
+ *
+ * @param songId 网易云歌曲 id
+ * @param meta 可选的曲目信息（用于回显歌名/歌手）
+ */
+export async function findLyricById(
+  songId: number,
+  meta?: { name: string; artist: string },
+): Promise<LyricResult> {
+  const { lrc, tlyric } = await fetchLyricById(songId)
+
+  const songInfo = meta
+    ? { id: songId, name: meta.name, artist: meta.artist }
+    : undefined
+
+  if (!lrc.trim()) {
+    return {
+      found: false,
+      song: songInfo,
+      lines: [],
+      hasTranslation: false,
+      message: '这首歌暂无歌词',
+    }
+  }
+
+  const original = parseLrc(lrc)
+  const translation = parseLrc(tlyric)
+  const lines = mergeTranslation(original, translation)
+
+  return {
+    found: true,
+    song: songInfo,
+    lines,
+    hasTranslation: lines.some((l) => l.translation),
   }
 }
 

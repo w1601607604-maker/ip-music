@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useRef } from 'react'
-import type { WorkItem, MusicItem, LyricResult } from '@/lib/types'
+import type { WorkItem, MusicItem, LyricResult, SongItem } from '@/lib/types'
 import { SUBJECT_TYPE_LABEL, COLLECTION_TYPE_LABEL } from '@/lib/types'
 
 const SUBJECT_TYPES = [
@@ -54,7 +54,13 @@ export default function Home() {
   // 当前选中的作品
   const [activeWork, setActiveWork] = useState<WorkItem | null>(null)
 
-  // 音乐列表
+  // 第一步：网易云曲目列表
+  const [songs, setSongs] = useState<SongItem[]>([])
+  const [loadingSongs, setLoadingSongs] = useState(false)
+  const [songsError, setSongsError] = useState('')
+
+  // 第二步：当前选中的曲目 + 它的 B站播放源
+  const [activeSong, setActiveSong] = useState<SongItem | null>(null)
   const [music, setMusic] = useState<MusicItem[]>([])
   const [loadingMusic, setLoadingMusic] = useState(false)
   const [musicError, setMusicError] = useState('')
@@ -62,9 +68,8 @@ export default function Home() {
   // 播放
   const [playing, setPlaying] = useState<MusicItem | null>(null)
 
-  // 歌词
+  // 歌词（直接由网易云曲目 id 获取，不再靠关键词猜）
   const [lyric, setLyric] = useState<LyricResult | null>(null)
-  const [lyricFor, setLyricFor] = useState<string>('')
   const [loadingLyric, setLoadingLyric] = useState(false)
 
   const detailRef = useRef<HTMLDivElement>(null)
@@ -111,15 +116,17 @@ export default function Home() {
     [username, subjectType, collectionType],
   )
 
-  /** 点击作品 → 加载音乐 */
+  /** 点击作品 → 第一步：从网易云拉取曲目列表 */
   const openWork = useCallback(async (work: WorkItem) => {
     setActiveWork(work)
+    setSongs([])
+    setSongsError('')
+    setActiveSong(null)
     setMusic([])
     setMusicError('')
     setPlaying(null)
     setLyric(null)
-    setLyricFor('')
-    setLoadingMusic(true)
+    setLoadingSongs(true)
 
     // 滚动到详情区
     setTimeout(
@@ -129,54 +136,85 @@ export default function Home() {
 
     try {
       const res = await fetch(
-        `/api/music/search?name=${encodeURIComponent(work.name)}`,
+        `/api/netease/songs?name=${encodeURIComponent(work.name)}`,
       )
       const json = await res.json()
 
       if (!res.ok) {
-        setMusicError(json.error || '搜索失败')
+        setSongsError(json.error || '搜索失败')
         return
       }
-      setMusic(json.data)
+      setSongs(json.data)
     } catch {
-      setMusicError('网络错误，请稍后重试')
+      setSongsError('网络错误，请稍后重试')
     } finally {
-      setLoadingMusic(false)
+      setLoadingSongs(false)
     }
   }, [])
 
-  /** 按需加载歌词 */
-  const loadLyric = useCallback(
-    async (item: MusicItem) => {
-      // 已加载过则折叠
-      if (lyricFor === item.bvid) {
+  /**
+   * 点击曲目 → 第二步：搜索 B站播放源 + 拉取歌词。
+   *
+   * B站请求只在这里触发（用户主动点击），请求量极低。
+   */
+  const openSong = useCallback(
+    async (song: SongItem) => {
+      // 再次点击同一首 → 收起
+      if (activeSong?.id === song.id) {
+        setActiveSong(null)
+        setMusic([])
+        setPlaying(null)
         setLyric(null)
-        setLyricFor('')
         return
       }
 
-      setLyricFor(item.bvid)
+      setActiveSong(song)
+      setMusic([])
+      setMusicError('')
+      setPlaying(null)
       setLyric(null)
+      setLoadingMusic(true)
       setLoadingLyric(true)
 
-      try {
-        const res = await fetch(
-          `/api/music/lyric?keyword=${encodeURIComponent(item.keyword)}`,
+      // 歌词与播放源并行请求
+      const lyricPromise = fetch(`/api/music/lyric?id=${song.id}`)
+        .then((r) => r.json())
+        .then((j) =>
+          setLyric(
+            j && !j.error
+              ? j
+              : {
+                  found: false,
+                  lines: [],
+                  hasTranslation: false,
+                  message: j?.error || '歌词加载失败',
+                },
+          ),
         )
-        const json = await res.json()
-        setLyric(res.ok ? json : { found: false, lines: [], hasTranslation: false, message: json.error })
-      } catch {
-        setLyric({
-          found: false,
-          lines: [],
-          hasTranslation: false,
-          message: '网络错误',
+        .catch(() =>
+          setLyric({
+            found: false,
+            lines: [],
+            hasTranslation: false,
+            message: '网络错误',
+          }),
+        )
+        .finally(() => setLoadingLyric(false))
+
+      const musicPromise = fetch(
+        `/api/music/search?song=${encodeURIComponent(song.name)}&artist=${encodeURIComponent(song.artist)}`,
+      )
+        .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
+        .then(({ ok, j }) => {
+          if (!ok) setMusicError(j.error || '搜索失败')
+          else setMusic(j.data)
         })
-      } finally {
-        setLoadingLyric(false)
-      }
+        .catch(() => setMusicError('网络错误，请稍后重试'))
+        .finally(() => setLoadingMusic(false))
+
+      await Promise.all([lyricPromise, musicPromise])
     },
-    [lyricFor],
+    [activeSong],
   )
 
   const hasMore = works.length < total
@@ -378,169 +416,239 @@ export default function Home() {
               </div>
             </div>
 
-            {/* 播放器 */}
-            {playing && (
-              <div className="mb-5">
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <p className="truncate text-sm text-slate-300">
-                    正在播放：{playing.title}
-                  </p>
-                  <button
-                    onClick={() => setPlaying(null)}
-                    className="flex-shrink-0 text-xs text-slate-400 hover:text-white"
-                  >
-                    关闭
-                  </button>
-                </div>
-                <div className="aspect-video w-full overflow-hidden rounded-lg bg-black">
-                  <iframe
-                    src={`https://player.bilibili.com/player.html?bvid=${playing.bvid}&page=1&autoplay=1&high_quality=1&danmaku=0`}
-                    className="h-full w-full"
-                    scrolling="no"
-                    frameBorder="0"
-                    allowFullScreen
-                    title={playing.title}
-                  />
-                </div>
-              </div>
+            {/* 第一步：网易云曲目列表 */}
+            <h3 className="mb-3 text-sm font-medium text-slate-300">
+              曲目列表
+              <span className="ml-2 font-normal text-slate-500">
+                {loadingSongs
+                  ? '搜索中…'
+                  : songs.length > 0
+                    ? `${songs.length} 首 · 来自网易云`
+                    : ''}
+              </span>
+            </h3>
+
+            {loadingSongs ? (
+              <p className="py-8 text-center text-sm text-slate-500">
+                正在从网易云搜索曲目…
+              </p>
+            ) : songsError ? (
+              <p className="rounded-lg bg-red-950/50 px-4 py-3 text-sm text-red-300">
+                {songsError}
+              </p>
+            ) : songs.length === 0 ? (
+              <p className="py-8 text-center text-sm text-slate-500">
+                网易云未找到该作品的曲目
+              </p>
+            ) : (
+              <ul className="mb-6 max-h-96 space-y-1.5 overflow-y-auto pr-1">
+                {songs.map((s) => {
+                  const isActive = activeSong?.id === s.id
+                  return (
+                    <li key={s.id}>
+                      <button
+                        onClick={() => openSong(s)}
+                        className={`flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition ${
+                          isActive
+                            ? 'border-bgm bg-slate-800/60'
+                            : 'border-slate-800 hover:bg-slate-800/40'
+                        }`}
+                      >
+                        <span
+                          className={`flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-xs ${
+                            isActive
+                              ? 'bg-bgm text-white'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}
+                        >
+                          {isActive ? '♪' : '▶'}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm text-slate-200">
+                            {s.name}
+                          </span>
+                          <span className="mt-0.5 block truncate text-xs text-slate-500">
+                            {s.artist}
+                            {s.album && ` · ${s.album}`}
+                          </span>
+                        </span>
+                        {s.duration > 0 && (
+                          <span className="flex-shrink-0 text-xs text-slate-500">
+                            {fmtDuration(Math.floor(s.duration / 1000))}
+                          </span>
+                        )}
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
             )}
 
-            {/* 歌词 */}
-            {lyricFor && (
-              <div className="mb-5 rounded-lg border border-slate-800 bg-slate-950/60 p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-sm font-medium text-slate-300">
-                    歌词
-                    {lyric?.song && (
-                      <span className="ml-2 font-normal text-slate-500">
-                        {lyric.song.name} — {lyric.song.artist}
-                      </span>
-                    )}
-                  </h3>
+            {/* 第二步：选中曲目后的播放源 + 歌词 */}
+            {activeSong && (
+              <div className="animate-fade-in border-t border-slate-800 pt-5">
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-base font-medium text-slate-100">
+                      {activeSong.name}
+                    </h3>
+                    <p className="mt-0.5 truncate text-xs text-slate-500">
+                      {activeSong.artist}
+                      {activeSong.album && ` · ${activeSong.album}`}
+                    </p>
+                  </div>
                   <button
                     onClick={() => {
+                      setActiveSong(null)
+                      setMusic([])
+                      setPlaying(null)
                       setLyric(null)
-                      setLyricFor('')
                     }}
-                    className="text-xs text-slate-400 hover:text-white"
+                    className="flex-shrink-0 text-xs text-slate-400 hover:text-white"
                   >
                     收起
                   </button>
                 </div>
 
-                {loadingLyric ? (
-                  <p className="py-4 text-center text-sm text-slate-500">
-                    歌词加载中…
-                  </p>
-                ) : lyric && lyric.lines.length > 0 ? (
-                  <div className="lyric-scroll max-h-80 overflow-y-auto pr-2">
-                    {lyric.lines.map((l, i) => (
-                      <div key={i} className="mb-2 leading-relaxed">
-                        <p className="text-sm text-slate-200">{l.text}</p>
-                        {l.translation && (
-                          <p className="text-xs text-slate-500">{l.translation}</p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="py-4 text-center text-sm text-slate-500">
-                    {lyric?.message || '暂无歌词'}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* 音乐列表 */}
-            <h3 className="mb-3 text-sm font-medium text-slate-300">
-              相关音乐
-              {music.length > 0 && (
-                <span className="ml-2 font-normal text-slate-500">
-                  {music.length} 个结果
-                </span>
-              )}
-            </h3>
-
-            {loadingMusic ? (
-              <p className="py-8 text-center text-sm text-slate-500">
-                正在搜索 B站音乐…
-              </p>
-            ) : musicError ? (
-              <p className="rounded-lg bg-red-950/50 px-4 py-3 text-sm text-red-300">
-                {musicError}
-              </p>
-            ) : music.length === 0 ? (
-              <p className="py-8 text-center text-sm text-slate-500">
-                暂无结果
-              </p>
-            ) : (
-              <ul className="space-y-2">
-                {music.map((m) => (
-                  <li
-                    key={m.bvid}
-                    className={`flex items-center gap-3 rounded-lg border p-2.5 transition ${
-                      playing?.bvid === m.bvid
-                        ? 'border-bgm bg-slate-800/60'
-                        : 'border-slate-800 hover:bg-slate-800/40'
-                    }`}
-                  >
-                    <button
-                      onClick={() => setPlaying(m)}
-                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                    >
-                      <div className="relative h-12 w-20 flex-shrink-0 overflow-hidden rounded bg-slate-800">
-                        {m.cover ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={m.cover}
-                            alt=""
-                            loading="lazy"
-                            className="h-full w-full object-cover"
-                          />
-                        ) : null}
-                        <span className="absolute inset-0 flex items-center justify-center bg-black/30 text-lg">
-                          ▶
-                        </span>
-                        {m.duration > 0 && (
-                          <span className="absolute bottom-0.5 right-0.5 rounded bg-black/80 px-1 text-[10px] text-white">
-                            {fmtDuration(m.duration)}
-                          </span>
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="line-clamp-2 text-sm text-slate-200">
-                          {m.title}
-                        </p>
-                        <p className="mt-0.5 truncate text-xs text-slate-500">
-                          {m.author}
-                          {m.play > 0 && ` · ${fmtPlay(m.play)} 播放`}
-                        </p>
-                      </div>
-                    </button>
-
-                    <div className="flex flex-shrink-0 flex-col gap-1 sm:flex-row">
+                {/* 播放器 */}
+                {playing && (
+                  <div className="mb-5">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <p className="truncate text-sm text-slate-300">
+                        正在播放：{playing.title}
+                      </p>
                       <button
-                        onClick={() => loadLyric(m)}
-                        className={`rounded px-2.5 py-1 text-xs transition ${
-                          lyricFor === m.bvid
-                            ? 'bg-bgm text-white'
-                            : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                        onClick={() => setPlaying(null)}
+                        className="flex-shrink-0 text-xs text-slate-400 hover:text-white"
+                      >
+                        关闭
+                      </button>
+                    </div>
+                    <div className="aspect-video w-full overflow-hidden rounded-lg bg-black">
+                      <iframe
+                        src={`https://player.bilibili.com/player.html?bvid=${playing.bvid}&page=1&autoplay=1&high_quality=1&danmaku=0`}
+                        className="h-full w-full"
+                        scrolling="no"
+                        frameBorder="0"
+                        allowFullScreen
+                        title={playing.title}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* 歌词 */}
+                <div className="mb-5 rounded-lg border border-slate-800 bg-slate-950/60 p-4">
+                  <h3 className="mb-3 text-sm font-medium text-slate-300">
+                    歌词与翻译
+                  </h3>
+                  {loadingLyric ? (
+                    <p className="py-4 text-center text-sm text-slate-500">
+                      歌词加载中…
+                    </p>
+                  ) : lyric && lyric.lines.length > 0 ? (
+                    <div className="lyric-scroll max-h-80 overflow-y-auto pr-2">
+                      {lyric.lines.map((l, i) => (
+                        <div key={i} className="mb-2 leading-relaxed">
+                          <p className="text-sm text-slate-200">{l.text}</p>
+                          {l.translation && (
+                            <p className="text-xs text-slate-500">
+                              {l.translation}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="py-4 text-center text-sm text-slate-500">
+                      {lyric?.message || '暂无歌词'}
+                    </p>
+                  )}
+                </div>
+
+                {/* B站播放源 */}
+                <h3 className="mb-3 text-sm font-medium text-slate-300">
+                  B站播放源
+                  {music.length > 0 && (
+                    <span className="ml-2 font-normal text-slate-500">
+                      {music.length} 个结果
+                    </span>
+                  )}
+                </h3>
+
+                {loadingMusic ? (
+                  <p className="py-6 text-center text-sm text-slate-500">
+                    正在搜索 B站播放源…
+                  </p>
+                ) : musicError ? (
+                  <div className="rounded-lg bg-red-950/50 px-4 py-3 text-sm text-red-300">
+                    <p className="whitespace-pre-wrap font-mono text-xs leading-relaxed">
+                      {musicError}
+                    </p>
+                    <a
+                      href={`https://search.bilibili.com/all?keyword=${encodeURIComponent(
+                        `${activeSong.name} ${activeSong.artist}`,
+                      )}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-2 inline-block rounded border border-red-700 px-3 py-1 text-xs text-red-200 transition hover:bg-red-900/40"
+                    >
+                      在 B站手动搜索 →
+                    </a>
+                  </div>
+                ) : music.length === 0 ? (
+                  <p className="py-6 text-center text-sm text-slate-500">
+                    暂无播放源
+                  </p>
+                ) : (
+                  <ul className="space-y-2">
+                    {music.map((m) => (
+                      <li
+                        key={m.bvid}
+                        className={`flex items-center gap-3 rounded-lg border p-2.5 transition ${
+                          playing?.bvid === m.bvid
+                            ? 'border-bgm bg-slate-800/60'
+                            : 'border-slate-800 hover:bg-slate-800/40'
                         }`}
                       >
-                        歌词
-                      </button>
-                      <a
-                        href={`https://music.163.com/#/search/m/?s=${encodeURIComponent(m.keyword)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded bg-slate-800 px-2.5 py-1 text-center text-xs text-slate-300 transition hover:bg-slate-700"
-                      >
-                        网易云
-                      </a>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+                        <button
+                          onClick={() => setPlaying(m)}
+                          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                        >
+                          <div className="relative h-12 w-20 flex-shrink-0 overflow-hidden rounded bg-slate-800">
+                            {m.cover ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={m.cover}
+                                alt=""
+                                loading="lazy"
+                                className="h-full w-full object-cover"
+                              />
+                            ) : null}
+                            <span className="absolute inset-0 flex items-center justify-center bg-black/30 text-lg">
+                              ▶
+                            </span>
+                            {m.duration > 0 && (
+                              <span className="absolute bottom-0.5 right-0.5 rounded bg-black/80 px-1 text-[10px] text-white">
+                                {fmtDuration(m.duration)}
+                              </span>
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="line-clamp-2 text-sm text-slate-200">
+                              {m.title}
+                            </p>
+                            <p className="mt-0.5 truncate text-xs text-slate-500">
+                              {m.author}
+                              {m.play > 0 && ` · ${fmtPlay(m.play)} 播放`}
+                            </p>
+                          </div>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             )}
           </section>
         )}
@@ -548,7 +656,7 @@ export default function Home() {
 
       <footer className="mt-12 border-t border-slate-800/60 pt-6 text-center text-xs text-slate-500">
         <p>
-          数据来源：Bangumi · B站（官方播放器）· 网易云（歌词）
+          数据来源：Bangumi（收藏）· 网易云（曲目与歌词）· B站（官方播放器）
         </p>
         <p className="mt-1">
           本站不存储任何音频，音乐播放由 B站官方播放器提供

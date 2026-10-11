@@ -396,11 +396,78 @@ async function searchMusicLegacy(
 }
 
 /**
+ * 按「歌名 + 歌手」搜索 B站播放源。
+ *
+ * 这是新主链路的第二步：用户在网易云曲目列表里点击某首歌后，
+ * 用精确的曲名+歌手去 B站找可播放的视频。
+ *
+ * 相比按作品名搜索，这里的关键词精确得多：
+ *   「だんご大家族 茶太」比「CLANNAD OST」命中率高得多，
+ *   而且只在用户点击时触发，请求量极低，不易触发风控。
+ *
+ * 搜索策略（按精确度递减，找到足够结果就停）：
+ *   1. 歌名 + 歌手
+ *   2. 歌名（兜底）
+ *
+ * @param songName 歌名
+ * @param artist 歌手（可选）
+ */
+export async function searchMusicForSong(
+  songName: string,
+  artist = '',
+): Promise<MusicItem[]> {
+  const name = songName.trim()
+  if (!name) return []
+
+  // 关键词组合：优先精确匹配，其次只用歌名
+  const queries: string[] = []
+  if (artist.trim()) queries.push(`${name} ${artist.trim()}`)
+  queries.push(name)
+
+  const seen = new Set<string>()
+  const merged: MusicItem[] = []
+  const errors: string[] = []
+
+  for (const q of queries) {
+    try {
+      const items = await searchMusic(q)
+      for (const it of items) {
+        if (seen.has(it.bvid)) continue
+        seen.add(it.bvid)
+        merged.push(it)
+      }
+      // 第一个关键词就找到足够结果，不必再搜
+      if (merged.length >= 8) break
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      errors.push(msg)
+      console.warn(`[bilibili] 搜索「${q}」失败：`, msg)
+    }
+    await new Promise((r) => setTimeout(r, 300))
+  }
+
+  if (merged.length === 0) {
+    const unique = [...new Set(errors)]
+    if (unique.length > 0) {
+      throw new BilibiliError(unique.join('；'))
+    }
+    throw new BilibiliError(`B站未找到「${name}」的播放源`)
+  }
+
+  // 按音乐相关性排序
+  merged.sort((a, b) => scoreMusic(b) - scoreMusic(a))
+  return merged
+}
+
+/**
  * 按作品名搜索音乐，优先返回 OST / 合集类内容。
  *
  * 策略：用多个关键词组合搜索，合并去重后排序：
  *   1. 合集类（时长 >= 10 分钟）优先 —— 用户要的是"听这张作品的音乐"
  *   2. 其次按播放量排序
+ *
+ * 注意：新链路已改为「作品 → 网易云曲目 → B站播放源」，
+ * 此函数保留用于兼容与兜底。
  */
 export async function searchMusicForWork(workName: string): Promise<MusicItem[]> {
   // 关键词组合：OST 优先，其次主题曲/音乐合集

@@ -85,6 +85,15 @@ export interface WorkItem {
   rate: number
 }
 
+/** 网易云曲目条目（主链路第一步的结果） */
+export interface SongItem {
+  id: number
+  name: string
+  artist: string
+  album: string
+  duration: number
+}
+
 /** B站视频条目 */
 export interface MusicItem {
   bvid: string

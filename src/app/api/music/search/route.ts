@@ -1,35 +1,60 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { searchMusicForWork, BilibiliError } from '@/lib/bilibili'
+import { searchMusicForSong, searchMusicForWork, BilibiliError } from '@/lib/bilibili'
 
 export const runtime = 'nodejs'
-// 注意：Edge Runtime 不支持 maxDuration，超时由平台限制决定。
-// B站搜索为多关键词串行 + 风控间隔，单次约 6~11 秒，在平台限制内。
 
 /**
- * GET /api/music/search?name={作品名}
+ * GET /api/music/search
  *
- * 按作品名搜索 B站音乐视频，优先返回 OST / 合集类内容。
+ * 两种用法：
+ *   1. ?song={歌名}&artist={歌手}  —— 按曲目搜索播放源（新主链路，推荐）
+ *   2. ?name={作品名}              —— 按作品名搜索（旧用法，保留兼容）
+ *
+ * 新链路下 B站请求只在用户点击具体歌曲时触发，请求量大幅降低，
+ * 可显著减少被风控拦截的概率。
  */
 export async function GET(req: NextRequest) {
+  const song = req.nextUrl.searchParams.get('song')?.trim()
+  const artist = req.nextUrl.searchParams.get('artist')?.trim() || ''
   const name = req.nextUrl.searchParams.get('name')?.trim()
 
-  if (!name) {
-    return NextResponse.json({ error: '请提供作品名' }, { status: 400 })
-  }
-
-  if (name.length > 100) {
-    return NextResponse.json({ error: '作品名过长' }, { status: 400 })
-  }
-
-  try {
-    const items = await searchMusicForWork(name)
-    return NextResponse.json({ data: items })
-  } catch (e) {
-    if (e instanceof BilibiliError) {
-      const status = e.status === 412 ? 429 : 502
-      return NextResponse.json({ error: e.message }, { status })
+  // 优先按曲目搜索
+  if (song) {
+    if (song.length > 120) {
+      return NextResponse.json({ error: '歌名过长' }, { status: 400 })
     }
-    console.error('[api/music/search]', e)
-    return NextResponse.json({ error: '服务器内部错误' }, { status: 500 })
+    try {
+      const items = await searchMusicForSong(song, artist)
+      return NextResponse.json({ data: items })
+    } catch (e) {
+      return errorResponse(e)
+    }
   }
+
+  // 兼容旧的按作品名搜索
+  if (name) {
+    if (name.length > 100) {
+      return NextResponse.json({ error: '作品名过长' }, { status: 400 })
+    }
+    try {
+      const items = await searchMusicForWork(name)
+      return NextResponse.json({ data: items })
+    } catch (e) {
+      return errorResponse(e)
+    }
+  }
+
+  return NextResponse.json(
+    { error: '请提供 song（歌名）或 name（作品名）参数' },
+    { status: 400 },
+  )
+}
+
+function errorResponse(e: unknown) {
+  if (e instanceof BilibiliError) {
+    const status = e.status === 412 ? 429 : 502
+    return NextResponse.json({ error: e.message }, { status })
+  }
+  console.error('[api/music/search]', e)
+  return NextResponse.json({ error: '服务器内部错误' }, { status: 500 })
 }
